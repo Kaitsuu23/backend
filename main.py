@@ -46,17 +46,19 @@ def get_info(url: str):
                 'no_warnings': True,
                 'extractor_args': {
                     'youtube': {
-                        'player_client': ['android'],
+                        'player_client': ['android_creator'],  # Try creator client
                     }
                 },
-                **get_ydl_proxy_opts(),  # Add proxy support
+                'geo_bypass': True,
+                'geo_bypass_country': 'US',
+                **get_ydl_proxy_opts(),
             }
             with yt_dlp.YoutubeDL(ydl_opts_android) as ydl:
                 info = ydl.extract_info(url, download=False)
                 all_formats.extend(info.get('formats', []))
-                print(f"Android client: {len(info.get('formats', []))} formats")
+                print(f"Android creator client: {len(info.get('formats', []))} formats")
         except Exception as e:
-            print(f"Android client failed: {e}")
+            print(f"Android creator client failed: {e}")
         
         # Strategy 2: iOS client
         try:
