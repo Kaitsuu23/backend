@@ -39,9 +39,8 @@ def get_info(url: str):
         'no_warnings': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web'],
-                'skip': ['hls', 'dash'],
-                'player_skip': ['webpage', 'configs']
+                'player_client': ['android', 'web', 'ios'],
+                'player_skip': ['webpage']
             }
         },
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -55,7 +54,8 @@ def get_info(url: str):
             video_resolutions = {}
             for f in formats:
                 # Video format without audio or combined
-                if f.get('vcodec') != 'none':
+                # Skip if no URL (SABR issue)
+                if f.get('vcodec') != 'none' and f.get('url'):
                     res = f.get('height')
                     if res and res >= 144:
                         # Keep track of format ids by resolution
@@ -112,6 +112,14 @@ def download_video(url: str, format_id: str, background_tasks: BackgroundTasks, 
             {'key': 'FFmpegMetadata'},
             {'key': 'EmbedThumbnail'},
         ],
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web', 'ios'],
+                'player_skip': ['webpage']
+            }
+        },
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'nocheckcertificate': True,
     }
     
     try:
