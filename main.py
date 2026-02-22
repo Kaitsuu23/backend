@@ -163,6 +163,13 @@ def get_tiktok_info(url: str):
         else:
             clean_url = url
             
+        # Check if it's a photo/slideshow URL (not supported)
+        if '/photo/' in clean_url:
+            raise HTTPException(
+                status_code=400,
+                detail="TikTok photo/slideshow tidak didukung. Hanya video TikTok yang bisa didownload. Coba pakai URL video TikTok biasa (yang ada /video/ di URL-nya)."
+            )
+            
         print(f"Mencoba fetch info TikTok untuk: {clean_url}")
         
         # Coba tanpa impersonation dulu
@@ -219,6 +226,8 @@ def get_tiktok_info(url: str):
                 ],
                 "platform": "tiktok"
             }
+    except HTTPException:
+        raise  # Re-raise HTTPException as-is
     except Exception as e:
         import traceback
         error_msg = str(e)
@@ -227,6 +236,11 @@ def get_tiktok_info(url: str):
         print(f"Full traceback:\n{full_traceback}")
         
         # Provide more helpful error message
+        if "Unsupported URL" in error_msg:
+            raise HTTPException(
+                status_code=400,
+                detail="URL TikTok tidak didukung. Pastikan URL adalah video TikTok yang valid (bukan photo/slideshow). Contoh: https://www.tiktok.com/@username/video/1234567890"
+            )
         if "10231" in error_msg or "not available" in error_msg.lower() or "Unexpected response" in error_msg:
             raise HTTPException(
                 status_code=400, 
