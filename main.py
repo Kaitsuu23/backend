@@ -157,20 +157,51 @@ def get_info(url: str):
 def get_tiktok_info(url: str):
     """Get TikTok video information"""
     try:
+        # Clean the URL - remove query parameters that might cause issues
+        if '?' in url:
+            clean_url = url.split('?')[0]
+        else:
+            clean_url = url
+            
         ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
+            'quiet': False,  # Enable logging to see what's happening
+            'no_warnings': False,
             'geo_bypass': True,
             'geo_bypass_country': 'US',
+            'nocheckcertificate': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://www.tiktok.com/',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+            },
+            'extractor_args': {
+                'tiktok': {
+                    'api_hostname': 'api22-normal-c-useast2a.tiktokv.com',
+                    'app_version': '34.1.2',
+                    'manifest_app_version': '341020',
+                }
+            },
             **get_ydl_proxy_opts(),
         }
         
+        print(f"Attempting to fetch TikTok info for: {clean_url}")
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            info = ydl.extract_info(clean_url, download=False)
             
             # TikTok usually has limited formats
             formats = info.get('formats', [])
             video_formats = []
+            
+            print(f"Found {len(formats)} formats")
             
             for f in formats:
                 if f.get('vcodec') != 'none' and f.get('url'):
@@ -190,7 +221,7 @@ def get_tiktok_info(url: str):
                     seen.add(fmt['resolution'])
                     unique_formats.append(fmt)
             
-            unique_formats.sort(key=lambda x: int(x['resolution'][:-1]), reverse=True)
+            unique_formats.sort(key=lambda x: int(x['resolution'][:-1]) if x['resolution'] != 'default' else 0, reverse=True)
             
             return {
                 "title": info.get('title', 'TikTok Video'),
@@ -204,8 +235,16 @@ def get_tiktok_info(url: str):
                 "platform": "tiktok"
             }
     except Exception as e:
-        print(f"TikTok info error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        error_msg = str(e)
+        print(f"TikTok info error: {error_msg}")
+        
+        # Provide more helpful error message
+        if "10231" in error_msg or "not available" in error_msg.lower():
+            raise HTTPException(
+                status_code=400, 
+                detail="TikTok video is not accessible. This could be due to: 1) Video is private/deleted, 2) Geographic restrictions, 3) TikTok anti-bot protection. Try a different video or check if the link is correct."
+            )
+        raise HTTPException(status_code=400, detail=error_msg)
 
 @app.get("/tiktok/download")
 def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Optional[str] = "best", task_id: Optional[str] = None):
@@ -225,20 +264,48 @@ def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Opti
         elif d['status'] == 'finished':
             download_progress[task_id] = {"status": "processing", "progress": 1.0}
     
+    # Clean the URL
+    if '?' in url:
+        clean_url = url.split('?')[0]
+    else:
+        clean_url = url
+    
     ydl_opts = {
         'format': format_id if format_id != "best" else 'best',
         'outtmpl': f"{base_name}.%(ext)s",
-        'quiet': True,
+        'quiet': False,
         'progress_hooks': [my_hook],
         'geo_bypass': True,
         'geo_bypass_country': 'US',
+        'nocheckcertificate': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://www.tiktok.com/',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+        },
+        'extractor_args': {
+            'tiktok': {
+                'api_hostname': 'api22-normal-c-useast2a.tiktokv.com',
+                'app_version': '34.1.2',
+                'manifest_app_version': '341020',
+            }
+        },
         **get_ydl_proxy_opts(),
     }
     
     try:
+        print(f"Downloading TikTok video: {clean_url}")
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            ydl.download([url])
+            info = ydl.extract_info(clean_url, download=True)
             
         files = glob.glob(f"{base_name}*")
         if not files:
@@ -261,8 +328,15 @@ def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Opti
     except Exception as e:
         cleanup_files(base_name)
         download_progress.pop(task_id, None)
-        print(f"TikTok download error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        error_msg = str(e)
+        print(f"TikTok download error: {error_msg}")
+        
+        if "10231" in error_msg or "not available" in error_msg.lower():
+            raise HTTPException(
+                status_code=400,
+                detail="TikTok video cannot be downloaded. This could be due to: 1) Video is private/deleted, 2) Geographic restrictions, 3) TikTok anti-bot protection. Try a different video."
+            )
+        raise HTTPException(status_code=400, detail=error_msg)
 
 @app.get("/download/video")
 def download_video(url: str, format_id: str, background_tasks: BackgroundTasks, task_id: Optional[str] = None):
