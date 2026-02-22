@@ -184,7 +184,9 @@ def get_tiktok_info(url: str):
         }
         
         # Request halaman TikTok
+        print("Requesting TikTok page...")
         response = requests.get(clean_url, headers=headers, timeout=10)
+        print(f"Response status: {response.status_code}")
         
         if response.status_code != 200:
             raise HTTPException(
@@ -193,16 +195,26 @@ def get_tiktok_info(url: str):
             )
         
         # Parse HTML
+        print("Parsing HTML...")
         soup = BeautifulSoup(response.text, 'html.parser')
         
         # Cari script tag yang berisi data video
+        print("Looking for script tags...")
         script_tag = soup.find('script', {'id': '__UNIVERSAL_DATA_FOR_REHYDRATION__'})
         
         if not script_tag:
+            print("__UNIVERSAL_DATA_FOR_REHYDRATION__ not found, trying SIGI_STATE...")
             # Coba cari di script tag lain
-            script_tag = soup.find('script', string=re.compile(r'window\[\'SIGI_STATE\'\]'))
+            script_tags = soup.find_all('script')
+            for tag in script_tags:
+                if tag.string and 'SIGI_STATE' in tag.string:
+                    script_tag = tag
+                    print("Found SIGI_STATE script tag")
+                    break
         
         if not script_tag:
+            print("ERROR: No script tag found with video data")
+            print(f"HTML preview (first 500 chars): {response.text[:500]}")
             raise HTTPException(
                 status_code=400,
                 detail="Tidak bisa menemukan data video di halaman TikTok. Video mungkin private atau dihapus."
@@ -210,36 +222,48 @@ def get_tiktok_info(url: str):
         
         # Extract JSON data
         json_text = script_tag.string
+        print(f"Script tag content preview: {json_text[:200] if json_text else 'None'}...")
         
         # Parse JSON
-        if 'window[\'SIGI_STATE\']' in json_text:
+        if 'SIGI_STATE' in json_text:
+            print("Parsing SIGI_STATE format...")
             # Extract JSON dari SIGI_STATE
             json_text = json_text.split('window[\'SIGI_STATE\']')[1].strip()
             json_text = json_text.split('window[\'SIGI_RETRY\']')[0].strip()
             json_text = json_text.strip('=;').strip()
         
+        print("Parsing JSON...")
         data = json.loads(json_text)
+        print(f"JSON keys: {list(data.keys())}")
         
         # Extract video info dari JSON
         video_detail = None
         
         # Coba berbagai struktur JSON yang mungkin
         if '__DEFAULT_SCOPE__' in data:
+            print("Found __DEFAULT_SCOPE__")
             default_scope = data['__DEFAULT_SCOPE__']
+            print(f"Default scope keys: {list(default_scope.keys())}")
             if 'webapp.video-detail' in default_scope:
                 video_detail = default_scope['webapp.video-detail']['itemInfo']['itemStruct']
+                print("Found video detail in webapp.video-detail")
         
         if not video_detail and 'ItemModule' in data:
+            print("Trying ItemModule...")
             # Ambil video pertama dari ItemModule
             item_module = data['ItemModule']
             video_id = list(item_module.keys())[0]
             video_detail = item_module[video_id]
+            print(f"Found video detail in ItemModule: {video_id}")
         
         if not video_detail:
+            print(f"ERROR: Could not find video detail. Available keys: {list(data.keys())}")
             raise HTTPException(
                 status_code=400,
-                detail="Tidak bisa extract data video dari TikTok."
+                detail="Tidak bisa extract data video dari TikTok. Struktur JSON mungkin berubah."
             )
+        
+        print("Extracting video information...")
         
         # Extract informasi yang dibutuhkan
         title = video_detail.get('desc', 'TikTok Video')
@@ -254,6 +278,8 @@ def get_tiktok_info(url: str):
         if not download_url:
             # Coba playAddr sebagai fallback
             download_url = video_data.get('playAddr', '')
+        
+        print(f"Download URL found: {bool(download_url)}")
         
         # Get thumbnail
         thumbnail = video_data.get('cover', '')
