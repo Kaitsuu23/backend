@@ -22,21 +22,27 @@ def get_proxy():
     """Get proxy URL to use"""
     # Priority: Paid proxy > Free proxies
     if PAID_PROXY:
+        print(f"Using paid proxy: {PAID_PROXY[:20]}...")  # Log proxy (hide full URL)
         return PAID_PROXY
     
     # Try free proxies (not reliable, but worth trying)
     if FREE_PROXIES:
         import random
-        return random.choice(FREE_PROXIES)
+        proxy = random.choice(FREE_PROXIES)
+        print(f"Using free proxy: {proxy[:20]}...")
+        return proxy
     
+    print("No proxy configured!")
     return None
 
 def get_ydl_proxy_opts():
     """Get yt-dlp proxy options"""
     proxy = get_proxy()
     if proxy:
+        print(f"Proxy options: proxy={proxy[:30]}..., timeout=30")
         return {
             'proxy': proxy,
             'socket_timeout': 30,
         }
+    print("No proxy options - using direct connection")
     return {}
