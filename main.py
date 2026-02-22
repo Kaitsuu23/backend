@@ -172,12 +172,14 @@ def download_video(url: str, format_id: str, background_tasks: BackgroundTasks, 
         ],
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web', 'ios'],
-                'player_skip': ['webpage']
+                'player_client': ['android_creator'],  # Same as info endpoint
             }
         },
+        'geo_bypass': True,
+        'geo_bypass_country': 'US',
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'nocheckcertificate': True,
+        **get_ydl_proxy_opts(),  # Add proxy support
     }
     
     try:
@@ -245,14 +247,14 @@ def download_audio(url: str, background_tasks: BackgroundTasks, task_id: Optiona
         ],
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web'],
-                'skip': ['hls', 'dash'],
-                'player_skip': ['webpage', 'configs']
+                'player_client': ['android_creator'],
             }
         },
+        'geo_bypass': True,
+        'geo_bypass_country': 'US',
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'nocheckcertificate': True,
-        'ignoreerrors': False,
+        **get_ydl_proxy_opts(),  # Add proxy support
     }
     
     try:
