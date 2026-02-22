@@ -172,7 +172,7 @@ def get_tiktok_info(url: str):
             
         print(f"Mencoba fetch info TikTok untuk: {clean_url}")
         
-        # Coba tanpa impersonation dulu
+        # TikTok: Jangan pakai proxy karena sering diblokir
         ydl_opts = {
             'quiet': False,
             'no_warnings': False,
@@ -181,7 +181,7 @@ def get_tiktok_info(url: str):
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
                 'Referer': 'https://www.tiktok.com/',
             },
-            **get_ydl_proxy_opts(),
+            # TIDAK pakai proxy untuk TikTok
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -241,10 +241,10 @@ def get_tiktok_info(url: str):
                 status_code=400,
                 detail="URL TikTok tidak didukung. Pastikan URL adalah video TikTok yang valid (bukan photo/slideshow). Contoh: https://www.tiktok.com/@username/video/1234567890"
             )
-        if "10231" in error_msg or "not available" in error_msg.lower() or "Unexpected response" in error_msg:
+        if "10231" in error_msg or "not available" in error_msg.lower() or "Unexpected response" in error_msg or "status code 0" in error_msg:
             raise HTTPException(
                 status_code=400, 
-                detail="Video TikTok tidak bisa diakses. Kemungkinan: 1) Video private/dihapus, 2) Dibatasi geografis, 3) TikTok anti-bot protection. Coba video lain atau cek link-nya."
+                detail="Video TikTok tidak bisa diakses. TikTok memblokir akses dari server. Sayangnya TikTok sangat agresif memblokir downloader. Coba video lain atau gunakan YouTube downloader yang sudah stabil."
             )
         raise HTTPException(status_code=400, detail=f"Error: {error_msg}")
 
@@ -272,6 +272,7 @@ def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Opti
     else:
         clean_url = url
     
+    # TikTok: Jangan pakai proxy karena sering diblokir
     ydl_opts = {
         'format': format_id if format_id != "best" else 'best',
         'outtmpl': f"{base_name}.%(ext)s",
@@ -282,7 +283,7 @@ def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Opti
             'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
             'Referer': 'https://www.tiktok.com/',
         },
-        **get_ydl_proxy_opts(),
+        # TIDAK pakai proxy untuk TikTok
     }
     
     try:
@@ -315,10 +316,10 @@ def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Opti
         error_msg = str(e)
         print(f"Error download TikTok: {error_msg}")
         
-        if "10231" in error_msg or "not available" in error_msg.lower() or "Unexpected response" in error_msg:
+        if "10231" in error_msg or "not available" in error_msg.lower() or "Unexpected response" in error_msg or "status code 0" in error_msg:
             raise HTTPException(
                 status_code=400,
-                detail="Video TikTok tidak bisa didownload. Kemungkinan: 1) Video private/dihapus, 2) Dibatasi geografis, 3) TikTok anti-bot protection. Coba video lain."
+                detail="Video TikTok tidak bisa didownload. TikTok memblokir akses dari server. Sayangnya TikTok sangat agresif memblokir downloader. Coba video lain atau gunakan YouTube downloader yang sudah stabil."
             )
         raise HTTPException(status_code=400, detail=error_msg)
 
