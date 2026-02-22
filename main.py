@@ -200,6 +200,7 @@ def download_video(url: str, format_id: str, background_tasks: BackgroundTasks, 
         background_tasks.add_task(cleanup_all)
         
         info = ydl.extract_info(url, download=False)
+        # Only replace invalid filename characters, keep spaces
         safe_title = re.sub(r'[\\/:*?"<>|]', '_', info.get('title', 'video')).strip()
         if not safe_title:
             safe_title = str(uuid.uuid4())
@@ -266,6 +267,7 @@ def download_audio(url: str, background_tasks: BackgroundTasks, task_id: Optiona
             raise Exception("File not found after download")
             
         info = ydl.extract_info(url, download=False)
+        # Only replace invalid filename characters, keep spaces
         safe_title = re.sub(r'[\\/:*?"<>|]', '_', info.get('title', 'audio')).strip()
         if not safe_title:
             safe_title = str(uuid.uuid4())
