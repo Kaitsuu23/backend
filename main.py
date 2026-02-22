@@ -7,6 +7,9 @@ from typing import Optional
 import yt_dlp
 import uuid
 import re
+import requests
+import json
+from bs4 import BeautifulSoup
 from proxy_config import get_ydl_proxy_opts
 
 app = FastAPI()
@@ -155,9 +158,9 @@ def get_info(url: str):
 
 @app.get("/tiktok/info")
 def get_tiktok_info(url: str):
-    """Get TikTok video information"""
+    """Get TikTok video information using web scraping"""
     try:
-        # Clean the URL - remove query parameters that might cause issues
+        # Clean the URL
         if '?' in url:
             clean_url = url.split('?')[0]
         else:
@@ -167,136 +170,197 @@ def get_tiktok_info(url: str):
         if '/photo/' in clean_url:
             raise HTTPException(
                 status_code=400,
-                detail="TikTok photo/slideshow tidak didukung. Hanya video TikTok yang bisa didownload. Coba pakai URL video TikTok biasa (yang ada /video/ di URL-nya)."
+                detail="TikTok photo/slideshow tidak didukung. Hanya video TikTok yang bisa didownload."
             )
             
-        print(f"Mencoba fetch info TikTok untuk: {clean_url}")
+        print(f"Scraping TikTok info untuk: {clean_url}")
         
-        # TikTok: Jangan pakai proxy karena sering diblokir
-        ydl_opts = {
-            'quiet': False,
-            'no_warnings': False,
-            'nocheckcertificate': True,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-                'Referer': 'https://www.tiktok.com/',
-            },
-            # TIDAK pakai proxy untuk TikTok
+        # Headers untuk mimic browser
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.tiktok.com/',
         }
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(clean_url, download=False)
-            
-            # TikTok usually has limited formats
-            formats = info.get('formats', [])
-            video_formats = []
-            
-            print(f"Ditemukan {len(formats)} format")
-            
-            for f in formats:
-                if f.get('vcodec') != 'none' and f.get('url'):
-                    res = f.get('height')
-                    if res:
-                        video_formats.append({
-                            "resolution": f"{res}p",
-                            "format_id": f.get('format_id'),
-                            "ext": f.get('ext', 'mp4')
-                        })
-            
-            # Remove duplicates and sort
-            seen = set()
-            unique_formats = []
-            for fmt in video_formats:
-                if fmt['resolution'] not in seen:
-                    seen.add(fmt['resolution'])
-                    unique_formats.append(fmt)
-            
-            unique_formats.sort(key=lambda x: int(x['resolution'][:-1]) if x['resolution'] != 'default' else 0, reverse=True)
-            
-            print(f"Mengembalikan {len(unique_formats)} format unik")
-            
-            return {
-                "title": info.get('title', 'TikTok Video'),
-                "thumbnail": info.get('thumbnail'),
-                "channel": info.get('uploader', info.get('creator', 'Unknown')),
-                "duration": info.get('duration'),
-                "description": info.get('description', ''),
-                "video_formats": unique_formats if unique_formats else [
-                    {"resolution": "default", "format_id": "best", "ext": "mp4"}
-                ],
-                "platform": "tiktok"
-            }
+        # Request halaman TikTok
+        response = requests.get(clean_url, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Tidak bisa mengakses TikTok. Status code: {response.status_code}"
+            )
+        
+        # Parse HTML
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Cari script tag yang berisi data video
+        script_tag = soup.find('script', {'id': '__UNIVERSAL_DATA_FOR_REHYDRATION__'})
+        
+        if not script_tag:
+            # Coba cari di script tag lain
+            script_tag = soup.find('script', string=re.compile(r'window\[\'SIGI_STATE\'\]'))
+        
+        if not script_tag:
+            raise HTTPException(
+                status_code=400,
+                detail="Tidak bisa menemukan data video di halaman TikTok. Video mungkin private atau dihapus."
+            )
+        
+        # Extract JSON data
+        json_text = script_tag.string
+        
+        # Parse JSON
+        if 'window[\'SIGI_STATE\']' in json_text:
+            # Extract JSON dari SIGI_STATE
+            json_text = json_text.split('window[\'SIGI_STATE\']')[1].strip()
+            json_text = json_text.split('window[\'SIGI_RETRY\']')[0].strip()
+            json_text = json_text.strip('=;').strip()
+        
+        data = json.loads(json_text)
+        
+        # Extract video info dari JSON
+        video_detail = None
+        
+        # Coba berbagai struktur JSON yang mungkin
+        if '__DEFAULT_SCOPE__' in data:
+            default_scope = data['__DEFAULT_SCOPE__']
+            if 'webapp.video-detail' in default_scope:
+                video_detail = default_scope['webapp.video-detail']['itemInfo']['itemStruct']
+        
+        if not video_detail and 'ItemModule' in data:
+            # Ambil video pertama dari ItemModule
+            item_module = data['ItemModule']
+            video_id = list(item_module.keys())[0]
+            video_detail = item_module[video_id]
+        
+        if not video_detail:
+            raise HTTPException(
+                status_code=400,
+                detail="Tidak bisa extract data video dari TikTok."
+            )
+        
+        # Extract informasi yang dibutuhkan
+        title = video_detail.get('desc', 'TikTok Video')
+        author = video_detail.get('author', {})
+        username = author.get('uniqueId', 'Unknown')
+        nickname = author.get('nickname', username)
+        
+        # Get video URL
+        video_data = video_detail.get('video', {})
+        download_url = video_data.get('downloadAddr', '')
+        
+        if not download_url:
+            # Coba playAddr sebagai fallback
+            download_url = video_data.get('playAddr', '')
+        
+        # Get thumbnail
+        thumbnail = video_data.get('cover', '')
+        if not thumbnail:
+            thumbnail = video_data.get('dynamicCover', '')
+        
+        # Get duration
+        duration = video_data.get('duration', 0)
+        
+        # Get video resolution/format
+        width = video_data.get('width', 0)
+        height = video_data.get('height', 0)
+        resolution = f"{height}p" if height > 0 else "default"
+        
+        print(f"Berhasil scrape TikTok: {title} by @{username}")
+        
+        return {
+            "title": title,
+            "thumbnail": thumbnail,
+            "channel": f"@{username} ({nickname})",
+            "duration": duration,
+            "description": title,
+            "video_formats": [
+                {
+                    "resolution": resolution,
+                    "format_id": "best",
+                    "ext": "mp4",
+                    "download_url": download_url
+                }
+            ],
+            "platform": "tiktok"
+        }
+        
     except HTTPException:
-        raise  # Re-raise HTTPException as-is
+        raise
     except Exception as e:
         import traceback
         error_msg = str(e)
         full_traceback = traceback.format_exc()
-        print(f"Error TikTok info: {error_msg}")
+        print(f"Error TikTok scraping: {error_msg}")
         print(f"Full traceback:\n{full_traceback}")
         
-        # Provide more helpful error message
-        if "Unsupported URL" in error_msg:
-            raise HTTPException(
-                status_code=400,
-                detail="URL TikTok tidak didukung. Pastikan URL adalah video TikTok yang valid (bukan photo/slideshow). Contoh: https://www.tiktok.com/@username/video/1234567890"
-            )
-        if "10231" in error_msg or "not available" in error_msg.lower() or "Unexpected response" in error_msg or "status code 0" in error_msg:
-            raise HTTPException(
-                status_code=400, 
-                detail="Video TikTok tidak bisa diakses. TikTok memblokir akses dari server. Sayangnya TikTok sangat agresif memblokir downloader. Coba video lain atau gunakan YouTube downloader yang sudah stabil."
-            )
-        raise HTTPException(status_code=400, detail=f"Error: {error_msg}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error scraping TikTok: {error_msg}. Video mungkin private, dihapus, atau TikTok mengubah struktur halaman."
+        )
 
 @app.get("/tiktok/download")
 def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Optional[str] = "best", task_id: Optional[str] = None):
-    """Download TikTok video"""
+    """Download TikTok video using direct URL from scraping"""
     if not task_id:
         task_id = str(uuid.uuid4())
     base_name = f"temp_{task_id}"
 
     download_progress[task_id] = {"status": "starting", "progress": 0.0}
-
-    def my_hook(d):
-        if d['status'] == 'downloading':
-            total = d.get('total_bytes') or d.get('total_bytes_estimate', 1)
-            downloaded = d.get('downloaded_bytes', 0)
-            if total > 0:
-                download_progress[task_id] = {"status": "downloading", "progress": downloaded / total}
-        elif d['status'] == 'finished':
-            download_progress[task_id] = {"status": "processing", "progress": 1.0}
-    
-    # Clean the URL
-    if '?' in url:
-        clean_url = url.split('?')[0]
-    else:
-        clean_url = url
-    
-    # TikTok: Jangan pakai proxy karena sering diblokir
-    ydl_opts = {
-        'format': format_id if format_id != "best" else 'best',
-        'outtmpl': f"{base_name}.%(ext)s",
-        'quiet': False,
-        'progress_hooks': [my_hook],
-        'nocheckcertificate': True,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-            'Referer': 'https://www.tiktok.com/',
-        },
-        # TIDAK pakai proxy untuk TikTok
-    }
     
     try:
+        # Clean the URL
+        if '?' in url:
+            clean_url = url.split('?')[0]
+        else:
+            clean_url = url
+        
         print(f"Mendownload video TikTok: {clean_url}")
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(clean_url, download=True)
-            
-        files = glob.glob(f"{base_name}*")
-        if not files:
-            raise Exception("File tidak ditemukan setelah download")
-            
-        safe_title = re.sub(r'[\\/:*?"<>|]', '_', info.get('title', 'tiktok_video')).strip()
+        # Pertama, scrape untuk dapat download URL
+        info_response = get_tiktok_info(clean_url)
+        
+        if not info_response.get('video_formats'):
+            raise Exception("Tidak ada format video yang tersedia")
+        
+        download_url = info_response['video_formats'][0].get('download_url')
+        
+        if not download_url:
+            raise Exception("Tidak bisa mendapatkan URL download")
+        
+        # Download file menggunakan requests
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://www.tiktok.com/',
+        }
+        
+        download_progress[task_id] = {"status": "downloading", "progress": 0.1}
+        
+        response = requests.get(download_url, headers=headers, stream=True, timeout=30)
+        
+        if response.status_code != 200:
+            raise Exception(f"Gagal download: status code {response.status_code}")
+        
+        # Save file
+        file_path = f"{base_name}.mp4"
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded = 0
+        
+        with open(file_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        progress = downloaded / total_size
+                        download_progress[task_id] = {"status": "downloading", "progress": progress}
+        
+        download_progress[task_id] = {"status": "completed", "progress": 1.0}
+        
+        # Generate safe filename
+        safe_title = re.sub(r'[\\/:*?"<>|]', '_', info_response.get('title', 'tiktok_video')).strip()
         if not safe_title:
             safe_title = str(uuid.uuid4())
 
@@ -304,24 +368,24 @@ def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Opti
             cleanup_files(base_name)
             download_progress.pop(task_id, None)
 
-        file_path = files[0]
         background_tasks.add_task(cleanup_all)
         
-        ext = file_path.split('.')[-1]
-        media_type = "video/mp4" if ext == "mp4" else "video/quicktime"
-        return FileResponse(file_path, filename=f"{safe_title}.{ext}", media_type=media_type)
+        return FileResponse(file_path, filename=f"{safe_title}.mp4", media_type="video/mp4")
+        
+    except HTTPException:
+        cleanup_files(base_name)
+        download_progress.pop(task_id, None)
+        raise
     except Exception as e:
         cleanup_files(base_name)
         download_progress.pop(task_id, None)
         error_msg = str(e)
         print(f"Error download TikTok: {error_msg}")
         
-        if "10231" in error_msg or "not available" in error_msg.lower() or "Unexpected response" in error_msg or "status code 0" in error_msg:
-            raise HTTPException(
-                status_code=400,
-                detail="Video TikTok tidak bisa didownload. TikTok memblokir akses dari server. Sayangnya TikTok sangat agresif memblokir downloader. Coba video lain atau gunakan YouTube downloader yang sudah stabil."
-            )
-        raise HTTPException(status_code=400, detail=error_msg)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Gagal download TikTok: {error_msg}"
+        )
 
 @app.get("/download/video")
 def download_video(url: str, format_id: str, background_tasks: BackgroundTasks, task_id: Optional[str] = None):
