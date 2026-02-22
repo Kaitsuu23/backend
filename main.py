@@ -29,6 +29,18 @@ def cleanup_files(base_name: str):
 
 download_progress = {}
 
+# Platform detection helper
+def detect_platform(url: str) -> str:
+    """Detect platform from URL"""
+    if 'youtube.com' in url or 'youtu.be' in url:
+        return 'youtube'
+    elif 'tiktok.com' in url or 'vt.tiktok.com' in url:
+        return 'tiktok'
+    elif 'instagram.com' in url:
+        return 'instagram'
+    else:
+        return 'unknown'
+
 @app.get("/progress")
 def get_progress(task_id: str):
     return download_progress.get(task_id, {"status": "starting", "progress": 0.0})
@@ -139,6 +151,117 @@ def get_info(url: str):
             "video_formats": video_formats
         }
     except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/tiktok/info")
+def get_tiktok_info(url: str):
+    """Get TikTok video information"""
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'geo_bypass': True,
+            'geo_bypass_country': 'US',
+            **get_ydl_proxy_opts(),
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            # TikTok usually has limited formats
+            formats = info.get('formats', [])
+            video_formats = []
+            
+            for f in formats:
+                if f.get('vcodec') != 'none' and f.get('url'):
+                    res = f.get('height')
+                    if res:
+                        video_formats.append({
+                            "resolution": f"{res}p",
+                            "format_id": f.get('format_id'),
+                            "ext": f.get('ext', 'mp4')
+                        })
+            
+            # Remove duplicates and sort
+            seen = set()
+            unique_formats = []
+            for fmt in video_formats:
+                if fmt['resolution'] not in seen:
+                    seen.add(fmt['resolution'])
+                    unique_formats.append(fmt)
+            
+            unique_formats.sort(key=lambda x: int(x['resolution'][:-1]), reverse=True)
+            
+            return {
+                "title": info.get('title', 'TikTok Video'),
+                "thumbnail": info.get('thumbnail'),
+                "channel": info.get('uploader', info.get('creator', 'Unknown')),
+                "duration": info.get('duration'),
+                "description": info.get('description', ''),
+                "video_formats": unique_formats if unique_formats else [
+                    {"resolution": "default", "format_id": "best", "ext": "mp4"}
+                ],
+                "platform": "tiktok"
+            }
+    except Exception as e:
+        print(f"TikTok info error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/tiktok/download")
+def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Optional[str] = "best", task_id: Optional[str] = None):
+    """Download TikTok video"""
+    if not task_id:
+        task_id = str(uuid.uuid4())
+    base_name = f"temp_{task_id}"
+
+    download_progress[task_id] = {"status": "starting", "progress": 0.0}
+
+    def my_hook(d):
+        if d['status'] == 'downloading':
+            total = d.get('total_bytes') or d.get('total_bytes_estimate', 1)
+            downloaded = d.get('downloaded_bytes', 0)
+            if total > 0:
+                download_progress[task_id] = {"status": "downloading", "progress": downloaded / total}
+        elif d['status'] == 'finished':
+            download_progress[task_id] = {"status": "processing", "progress": 1.0}
+    
+    ydl_opts = {
+        'format': format_id if format_id != "best" else 'best',
+        'outtmpl': f"{base_name}.%(ext)s",
+        'quiet': True,
+        'progress_hooks': [my_hook],
+        'geo_bypass': True,
+        'geo_bypass_country': 'US',
+        **get_ydl_proxy_opts(),
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            ydl.download([url])
+            
+        files = glob.glob(f"{base_name}*")
+        if not files:
+            raise Exception("File not found after download")
+            
+        safe_title = re.sub(r'[\\/:*?"<>|]', '_', info.get('title', 'tiktok_video')).strip()
+        if not safe_title:
+            safe_title = str(uuid.uuid4())
+
+        def cleanup_all():
+            cleanup_files(base_name)
+            download_progress.pop(task_id, None)
+
+        file_path = files[0]
+        background_tasks.add_task(cleanup_all)
+        
+        ext = file_path.split('.')[-1]
+        media_type = "video/mp4" if ext == "mp4" else "video/quicktime"
+        return FileResponse(file_path, filename=f"{safe_title}.{ext}", media_type=media_type)
+    except Exception as e:
+        cleanup_files(base_name)
+        download_progress.pop(task_id, None)
+        print(f"TikTok download error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/download/video")
