@@ -165,13 +165,6 @@ def get_tiktok_info(url: str):
         else:
             clean_url = url
             
-        # Check if it's a photo/slideshow URL (not supported)
-        if '/photo/' in clean_url:
-            raise HTTPException(
-                status_code=400,
-                detail="TikTok photo/slideshow tidak didukung. Hanya video TikTok yang bisa didownload."
-            )
-            
         print(f"Fetching TikTok info via TikWM API: {clean_url}")
         
         # Call TikWM API
@@ -217,8 +210,9 @@ def get_tiktok_info(url: str):
         hdplay_url = video_data.get('hdplay', '')  # HD quality
         wmplay_url = video_data.get('wmplay', '')  # With watermark
         
-        # Prefer HD, fallback to standard
-        download_url = hdplay_url if hdplay_url else play_url
+        # Check if it's a photo/slideshow
+        images = video_data.get('images', [])
+        is_photo = len(images) > 0
         
         # Get thumbnail
         thumbnail = video_data.get('cover', '')
@@ -231,26 +225,37 @@ def get_tiktok_info(url: str):
         # Get video stats
         play_count = video_data.get('play_count', 0)
         
-        print(f"Berhasil fetch TikTok via TikWM: {title} by @{username}")
+        print(f"Berhasil fetch TikTok via TikWM: {title} by @{username}, is_photo: {is_photo}")
         
         # Build formats list
         video_formats = []
         
-        if hdplay_url:
-            video_formats.append({
-                "resolution": "HD",
-                "format_id": "hd",
-                "ext": "mp4",
-                "download_url": hdplay_url
-            })
-        
-        if play_url:
-            video_formats.append({
-                "resolution": "SD",
-                "format_id": "sd",
-                "ext": "mp4",
-                "download_url": play_url
-            })
+        if is_photo:
+            # For photo/slideshow, return image URLs
+            for idx, img_url in enumerate(images):
+                video_formats.append({
+                    "resolution": f"Image {idx + 1}",
+                    "format_id": f"img_{idx}",
+                    "ext": "jpg",
+                    "download_url": img_url
+                })
+        else:
+            # For video
+            if hdplay_url:
+                video_formats.append({
+                    "resolution": "HD",
+                    "format_id": "hd",
+                    "ext": "mp4",
+                    "download_url": hdplay_url
+                })
+            
+            if play_url:
+                video_formats.append({
+                    "resolution": "SD",
+                    "format_id": "sd",
+                    "ext": "mp4",
+                    "download_url": play_url
+                })
         
         if not video_formats:
             raise HTTPException(
@@ -266,7 +271,8 @@ def get_tiktok_info(url: str):
             "description": title,
             "video_formats": video_formats,
             "platform": "tiktok",
-            "play_count": play_count
+            "play_count": play_count,
+            "is_photo": is_photo
         }
         
     except HTTPException:
@@ -285,7 +291,7 @@ def get_tiktok_info(url: str):
 
 @app.get("/tiktok/download")
 def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Optional[str] = "hd", task_id: Optional[str] = None):
-    """Download TikTok video using TikWM API"""
+    """Download TikTok video or photo using TikWM API"""
     if not task_id:
         task_id = str(uuid.uuid4())
     base_name = f"temp_{task_id}"
@@ -299,29 +305,35 @@ def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Opti
         else:
             clean_url = url
         
-        print(f"Downloading TikTok video via TikWM: {clean_url}")
+        print(f"Downloading TikTok via TikWM: {clean_url}")
         
-        # Get video info first
+        # Get video/photo info first
         info_response = get_tiktok_info(clean_url)
         
         if not info_response.get('video_formats'):
-            raise Exception("Tidak ada format video yang tersedia")
+            raise Exception("Tidak ada format yang tersedia")
+        
+        is_photo = info_response.get('is_photo', False)
         
         # Find the requested format
         download_url = None
+        file_ext = "mp4"
+        
         for fmt in info_response['video_formats']:
             if fmt['format_id'] == format_id:
                 download_url = fmt['download_url']
+                file_ext = fmt.get('ext', 'mp4')
                 break
         
         # If format not found, use first available
         if not download_url:
             download_url = info_response['video_formats'][0]['download_url']
+            file_ext = info_response['video_formats'][0].get('ext', 'mp4')
         
         if not download_url:
             raise Exception("Tidak bisa mendapatkan URL download")
         
-        print(f"Download URL: {download_url[:50]}...")
+        print(f"Download URL: {download_url[:50]}..., ext: {file_ext}")
         
         # Download file
         headers = {
@@ -337,7 +349,7 @@ def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Opti
             raise Exception(f"Gagal download: status code {response.status_code}")
         
         # Save file
-        file_path = f"{base_name}.mp4"
+        file_path = f"{base_name}.{file_ext}"
         total_size = int(response.headers.get('content-length', 0))
         downloaded = 0
         
@@ -357,7 +369,7 @@ def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Opti
         print(f"Download completed: {downloaded} bytes")
         
         # Generate safe filename
-        safe_title = re.sub(r'[\\/:*?"<>|]', '_', info_response.get('title', 'tiktok_video')).strip()
+        safe_title = re.sub(r'[\\/:*?"<>|]', '_', info_response.get('title', 'tiktok_file')).strip()
         if not safe_title:
             safe_title = str(uuid.uuid4())
 
@@ -367,7 +379,15 @@ def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Opti
 
         background_tasks.add_task(cleanup_all)
         
-        return FileResponse(file_path, filename=f"{safe_title}.mp4", media_type="video/mp4")
+        # Set appropriate media type
+        if file_ext == "jpg" or file_ext == "jpeg":
+            media_type = "image/jpeg"
+        elif file_ext == "png":
+            media_type = "image/png"
+        else:
+            media_type = "video/mp4"
+        
+        return FileResponse(file_path, filename=f"{safe_title}.{file_ext}", media_type=media_type)
         
     except HTTPException:
         cleanup_files(base_name)
