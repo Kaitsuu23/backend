@@ -7,6 +7,7 @@ from typing import Optional
 import yt_dlp
 import uuid
 import re
+from proxy_config import get_ydl_proxy_opts
 
 app = FastAPI()
 
@@ -48,6 +49,7 @@ def get_info(url: str):
                         'player_client': ['android'],
                     }
                 },
+                **get_ydl_proxy_opts(),  # Add proxy support
             }
             with yt_dlp.YoutubeDL(ydl_opts_android) as ydl:
                 info = ydl.extract_info(url, download=False)
