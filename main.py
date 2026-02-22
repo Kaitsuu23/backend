@@ -37,6 +37,15 @@ def get_info(url: str):
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web'],
+                'skip': ['hls', 'dash'],
+                'player_skip': ['webpage', 'configs']
+            }
+        },
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'nocheckcertificate': True,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -168,6 +177,16 @@ def download_audio(url: str, background_tasks: BackgroundTasks, task_id: Optiona
             {'key': 'FFmpegMetadata'},
             {'key': 'EmbedThumbnail'},
         ],
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web'],
+                'skip': ['hls', 'dash'],
+                'player_skip': ['webpage', 'configs']
+            }
+        },
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'nocheckcertificate': True,
+        'ignoreerrors': False,
     }
     
     try:
