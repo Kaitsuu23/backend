@@ -164,11 +164,12 @@ def get_tiktok_info(url: str):
             clean_url = url
             
         ydl_opts = {
-            'quiet': False,  # Enable logging to see what's happening
+            'quiet': False,
             'no_warnings': False,
             'geo_bypass': True,
             'geo_bypass_country': 'US',
             'nocheckcertificate': True,
+            'impersonate': 'chrome',  # Enable browser impersonation
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Referer': 'https://www.tiktok.com/',
@@ -239,7 +240,7 @@ def get_tiktok_info(url: str):
         print(f"TikTok info error: {error_msg}")
         
         # Provide more helpful error message
-        if "10231" in error_msg or "not available" in error_msg.lower():
+        if "10231" in error_msg or "not available" in error_msg.lower() or "Unexpected response" in error_msg:
             raise HTTPException(
                 status_code=400, 
                 detail="TikTok video is not accessible. This could be due to: 1) Video is private/deleted, 2) Geographic restrictions, 3) TikTok anti-bot protection. Try a different video or check if the link is correct."
@@ -278,6 +279,7 @@ def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Opti
         'geo_bypass': True,
         'geo_bypass_country': 'US',
         'nocheckcertificate': True,
+        'impersonate': 'chrome',  # Enable browser impersonation
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Referer': 'https://www.tiktok.com/',
@@ -331,7 +333,7 @@ def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Opti
         error_msg = str(e)
         print(f"TikTok download error: {error_msg}")
         
-        if "10231" in error_msg or "not available" in error_msg.lower():
+        if "10231" in error_msg or "not available" in error_msg.lower() or "Unexpected response" in error_msg:
             raise HTTPException(
                 status_code=400,
                 detail="TikTok video cannot be downloaded. This could be due to: 1) Video is private/deleted, 2) Geographic restrictions, 3) TikTok anti-bot protection. Try a different video."
