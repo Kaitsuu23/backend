@@ -39,12 +39,12 @@ def get_info(url: str):
         'no_warnings': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web', 'ios'],
-                'player_skip': ['webpage']
+                'player_client': ['android', 'web', 'ios', 'mweb'],
             }
         },
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'nocheckcertificate': True,
+        'format': 'bestvideo+bestaudio/best',  # Force best quality detection
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -52,26 +52,35 @@ def get_info(url: str):
             
             formats = info.get('formats', [])
             video_resolutions = {}
+            
+            # Debug: print all available formats
+            print(f"Total formats found: {len(formats)}")
+            
             for f in formats:
-                # Video format without audio or combined
-                # Skip if no URL (SABR issue)
+                # Get all video formats that have a URL
                 if f.get('vcodec') != 'none' and f.get('url'):
                     res = f.get('height')
+                    format_id = f.get('format_id')
+                    
+                    # Debug log
+                    print(f"Format {format_id}: {res}p, vcodec={f.get('vcodec')}, has_url={bool(f.get('url'))}")
+                    
                     if res and res >= 144:
-                        # Keep track of format ids by resolution
                         if res not in video_resolutions:
                             video_resolutions[res] = []
-                        video_resolutions[res].append(f.get('format_id'))
+                        video_resolutions[res].append(format_id)
             
             # Sort resolutions from highest to lowest
             sorted_res = sorted(video_resolutions.keys(), reverse=True)
             video_formats = [
                 {
                     "resolution": f"{r}p", 
-                    "format_id": video_resolutions[r][0] # take the first one or we can take the best bitrate
+                    "format_id": video_resolutions[r][0]
                 } 
                 for r in sorted_res
             ]
+            
+            print(f"Final video_formats: {video_formats}")
 
             return {
                 "title": info.get('title'),
