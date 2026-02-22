@@ -163,6 +163,8 @@ def get_tiktok_info(url: str):
         else:
             clean_url = url
             
+        print(f"Attempting to fetch TikTok info for: {clean_url}")
+        
         ydl_opts = {
             'quiet': False,
             'no_warnings': False,
@@ -193,8 +195,6 @@ def get_tiktok_info(url: str):
             **get_ydl_proxy_opts(),
         }
         
-        print(f"Attempting to fetch TikTok info for: {clean_url}")
-        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(clean_url, download=False)
             
@@ -224,6 +224,8 @@ def get_tiktok_info(url: str):
             
             unique_formats.sort(key=lambda x: int(x['resolution'][:-1]) if x['resolution'] != 'default' else 0, reverse=True)
             
+            print(f"Returning {len(unique_formats)} unique formats")
+            
             return {
                 "title": info.get('title', 'TikTok Video'),
                 "thumbnail": info.get('thumbnail'),
@@ -236,8 +238,11 @@ def get_tiktok_info(url: str):
                 "platform": "tiktok"
             }
     except Exception as e:
+        import traceback
         error_msg = str(e)
+        full_traceback = traceback.format_exc()
         print(f"TikTok info error: {error_msg}")
+        print(f"Full traceback:\n{full_traceback}")
         
         # Provide more helpful error message
         if "10231" in error_msg or "not available" in error_msg.lower() or "Unexpected response" in error_msg:
@@ -245,7 +250,7 @@ def get_tiktok_info(url: str):
                 status_code=400, 
                 detail="TikTok video is not accessible. This could be due to: 1) Video is private/deleted, 2) Geographic restrictions, 3) TikTok anti-bot protection. Try a different video or check if the link is correct."
             )
-        raise HTTPException(status_code=400, detail=error_msg)
+        raise HTTPException(status_code=400, detail=f"Error: {error_msg}")
 
 @app.get("/tiktok/download")
 def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Optional[str] = "best", task_id: Optional[str] = None):
