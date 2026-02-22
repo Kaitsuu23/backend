@@ -34,61 +34,106 @@ def get_progress(task_id: str):
 
 @app.get("/info")
 def get_info(url: str):
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web', 'ios', 'mweb'],
-            }
-        },
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'nocheckcertificate': True,
-        'format': 'bestvideo+bestaudio/best',  # Force best quality detection
-    }
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            
-            formats = info.get('formats', [])
-            video_resolutions = {}
-            
-            # Debug: print all available formats
-            print(f"Total formats found: {len(formats)}")
-            
-            for f in formats:
-                # Get all video formats that have a URL
-                if f.get('vcodec') != 'none' and f.get('url'):
-                    res = f.get('height')
-                    format_id = f.get('format_id')
-                    
-                    # Debug log
-                    print(f"Format {format_id}: {res}p, vcodec={f.get('vcodec')}, has_url={bool(f.get('url'))}")
-                    
-                    if res and res >= 144:
-                        if res not in video_resolutions:
-                            video_resolutions[res] = []
-                        video_resolutions[res].append(format_id)
-            
-            # Sort resolutions from highest to lowest
-            sorted_res = sorted(video_resolutions.keys(), reverse=True)
-            video_formats = [
-                {
-                    "resolution": f"{r}p", 
-                    "format_id": video_resolutions[r][0]
-                } 
-                for r in sorted_res
-            ]
-            
-            print(f"Final video_formats: {video_formats}")
-
-            return {
-                "title": info.get('title'),
-                "thumbnail": info.get('thumbnail'),
-                "channel": info.get('uploader'),
-                "duration": info.get('duration'),
-                "video_formats": video_formats
+        # Try multiple strategies to get all formats
+        all_formats = []
+        
+        # Strategy 1: Android client (usually has most formats)
+        try:
+            ydl_opts_android = {
+                'quiet': True,
+                'no_warnings': True,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android'],
+                    }
+                },
             }
+            with yt_dlp.YoutubeDL(ydl_opts_android) as ydl:
+                info = ydl.extract_info(url, download=False)
+                all_formats.extend(info.get('formats', []))
+                print(f"Android client: {len(info.get('formats', []))} formats")
+        except Exception as e:
+            print(f"Android client failed: {e}")
+        
+        # Strategy 2: iOS client
+        try:
+            ydl_opts_ios = {
+                'quiet': True,
+                'no_warnings': True,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['ios'],
+                    }
+                },
+            }
+            with yt_dlp.YoutubeDL(ydl_opts_ios) as ydl:
+                info_ios = ydl.extract_info(url, download=False)
+                all_formats.extend(info_ios.get('formats', []))
+                print(f"iOS client: {len(info_ios.get('formats', []))} formats")
+        except Exception as e:
+            print(f"iOS client failed: {e}")
+        
+        # Strategy 3: Web client
+        try:
+            ydl_opts_web = {
+                'quiet': True,
+                'no_warnings': True,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['web'],
+                    }
+                },
+            }
+            with yt_dlp.YoutubeDL(ydl_opts_web) as ydl:
+                info_web = ydl.extract_info(url, download=False)
+                all_formats.extend(info_web.get('formats', []))
+                print(f"Web client: {len(info_web.get('formats', []))} formats")
+        except Exception as e:
+            print(f"Web client failed: {e}")
+        
+        print(f"Total formats from all clients: {len(all_formats)}")
+        
+        # Deduplicate and process formats
+        video_resolutions = {}
+        seen_format_ids = set()
+        
+        for f in all_formats:
+            format_id = f.get('format_id')
+            if format_id in seen_format_ids:
+                continue
+            seen_format_ids.add(format_id)
+            
+            # Get all video formats that have a URL
+            if f.get('vcodec') != 'none' and f.get('url'):
+                res = f.get('height')
+                
+                if res and res >= 144:
+                    if res not in video_resolutions:
+                        video_resolutions[res] = []
+                    video_resolutions[res].append(format_id)
+                    print(f"Added format {format_id}: {res}p")
+        
+        # Sort resolutions from highest to lowest
+        sorted_res = sorted(video_resolutions.keys(), reverse=True)
+        video_formats = [
+            {
+                "resolution": f"{r}p", 
+                "format_id": video_resolutions[r][0]
+            } 
+            for r in sorted_res
+        ]
+        
+        print(f"Final video_formats: {video_formats}")
+        
+        # Use info from first successful client
+        return {
+            "title": info.get('title'),
+            "thumbnail": info.get('thumbnail'),
+            "channel": info.get('uploader'),
+            "duration": info.get('duration'),
+            "video_formats": video_formats
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
