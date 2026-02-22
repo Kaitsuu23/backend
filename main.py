@@ -318,17 +318,20 @@ def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Opti
         # Find the requested format
         download_url = None
         file_ext = "mp4"
+        format_resolution = ""
         
         for fmt in info_response['video_formats']:
             if fmt['format_id'] == format_id:
                 download_url = fmt['download_url']
                 file_ext = fmt.get('ext', 'mp4')
+                format_resolution = fmt.get('resolution', '')
                 break
         
         # If format not found, use first available
         if not download_url:
             download_url = info_response['video_formats'][0]['download_url']
             file_ext = info_response['video_formats'][0].get('ext', 'mp4')
+            format_resolution = info_response['video_formats'][0].get('resolution', '')
         
         if not download_url:
             raise Exception("Tidak bisa mendapatkan URL download")
@@ -368,10 +371,17 @@ def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Opti
         
         print(f"Download completed: {downloaded} bytes")
         
-        # Generate safe filename
-        safe_title = re.sub(r'[\\/:*?"<>|]', '_', info_response.get('title', 'tiktok_file')).strip()
-        if not safe_title:
-            safe_title = str(uuid.uuid4())
+        # Generate simple filename: tiktok_{timestamp}_{type}.ext
+        import time
+        timestamp = str(int(time.time()))
+        
+        if is_photo:
+            # For photo: tiktok_{timestamp}_img1.jpg
+            img_num = format_resolution.replace('Image ', '').strip() if 'Image' in format_resolution else '1'
+            safe_title = f"tiktok_{timestamp}_img{img_num}"
+        else:
+            # For video: tiktok_{timestamp}.mp4
+            safe_title = f"tiktok_{timestamp}"
 
         def cleanup_all():
             cleanup_files(base_name)
@@ -387,7 +397,10 @@ def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Opti
         else:
             media_type = "video/mp4"
         
-        return FileResponse(file_path, filename=f"{safe_title}.{file_ext}", media_type=media_type)
+        final_filename = f"{safe_title}.{file_ext}"
+        print(f"Final filename: {final_filename}")
+        
+        return FileResponse(file_path, filename=final_filename, media_type=media_type)
         
     except HTTPException:
         cleanup_files(base_name)
