@@ -338,6 +338,130 @@ def get_tiktok_info(url: str):
             detail=f"Error mengambil info TikTok: {error_msg}"
         )
 
+# --- Instagram (yt-dlp) ---
+
+@app.get("/instagram/info")
+def get_instagram_info(url: str):
+    """Get Instagram post/reel info using yt-dlp"""
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        if not info:
+            raise Exception("Failed to extract Instagram info")
+
+        # Handle playlist (carousel) - use first entry
+        entries = info.get('entries')
+        if entries:
+            first = entries[0]
+            if isinstance(first, dict) and first.get('url'):
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl2:
+                    info = ydl2.extract_info(first['url'], download=False) or first
+            elif isinstance(first, dict):
+                info = first
+            # else keep info as is
+
+        title = info.get('title') or info.get('description') or 'Instagram'
+        uploader = info.get('uploader') or info.get('uploader_id') or 'Instagram'
+        thumbnail = info.get('thumbnail') or ''
+        duration = info.get('duration')
+
+        formats = info.get('formats', [])
+        video_formats = []
+        # Prefer best combined or best video
+        if formats:
+            # Build list: best video, or single "best" option for simplicity
+            height_set = set()
+            for f in formats:
+                h = f.get('height')
+                if h and h not in height_set and f.get('vcodec') != 'none':
+                    height_set.add(h)
+                    video_formats.append({
+                        'resolution': f'{h}p',
+                        'format_id': f.get('format_id', 'best'),
+                        'ext': f.get('ext', 'mp4'),
+                    })
+            video_formats.sort(key=lambda x: int(x['resolution'].replace('p', '') or 0), reverse=True)
+        if not video_formats:
+            video_formats = [{'resolution': 'Best', 'format_id': 'best', 'ext': 'mp4'}]
+
+        return {
+            'title': title[:200] if title else 'Instagram',
+            'thumbnail': thumbnail,
+            'channel': uploader,
+            'duration': duration,
+            'video_formats': video_formats,
+            'platform': 'instagram',
+        }
+    except Exception as e:
+        import traceback
+        print(f"Instagram info error: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=400, detail=f"Instagram: {str(e)}")
+
+@app.get("/instagram/download")
+def download_instagram(url: str, background_tasks: BackgroundTasks, format_id: Optional[str] = "best", task_id: Optional[str] = None):
+    """Download Instagram video using yt-dlp"""
+    if not task_id:
+        task_id = str(uuid.uuid4())
+    base_name = f"temp_ig_{task_id}"
+    download_progress[task_id] = {"status": "starting", "progress": 0.0}
+
+    def my_hook(d):
+        if d['status'] == 'downloading':
+            total = d.get('total_bytes') or d.get('total_bytes_estimate', 1)
+            downloaded = d.get('downloaded_bytes', 0)
+            if total > 0:
+                download_progress[task_id] = {"status": "downloading", "progress": downloaded / total}
+        elif d['status'] == 'finished':
+            download_progress[task_id] = {"status": "processing", "progress": 1.0}
+
+    ydl_opts = {
+        'format': format_id if format_id and format_id != 'best' else 'best[ext=mp4]/best',
+        'outtmpl': f"{base_name}.%(ext)s",
+        'quiet': True,
+        'progress_hooks': [my_hook],
+        'nocheckcertificate': True,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        files = glob.glob(f"{base_name}*")
+        # Exclude .part temporary files
+        files = [f for f in files if not f.endswith('.part') and os.path.isfile(f)]
+        if not files:
+            raise Exception("File not found after download")
+        file_path = files[0]
+        ext = file_path.split('.')[-1]
+        info = None
+        try:
+            with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+            if info and info.get('entries'):
+                info = info['entries'][0] if isinstance(info['entries'][0], dict) else info
+        except Exception:
+            pass
+        safe_title = 'instagram'
+        if info:
+            safe_title = re.sub(r'[\\/:*?"<>|]', '_', (info.get('title') or info.get('uploader') or 'instagram')).strip() or 'instagram'
+        if not safe_title or safe_title == 'instagram':
+            safe_title = f"instagram_{task_id}"
+
+        def cleanup_all():
+            cleanup_files(base_name)
+            download_progress.pop(task_id, None)
+        background_tasks.add_task(cleanup_all)
+
+        media_type = "video/mp4" if ext in ('mp4', 'webm') else "image/jpeg" if ext in ('jpg', 'jpeg') else "image/png"
+        return FileResponse(file_path, filename=f"{safe_title}.{ext}", media_type=media_type)
+    except Exception as e:
+        cleanup_files(base_name)
+        download_progress.pop(task_id, None)
+        raise HTTPException(status_code=400, detail=f"Instagram download: {str(e)}")
+
 @app.get("/tiktok/download")
 def download_tiktok(url: str, background_tasks: BackgroundTasks, format_id: Optional[str] = "hd", task_id: Optional[str] = None):
     """Download TikTok video or photo using TikWM API"""
