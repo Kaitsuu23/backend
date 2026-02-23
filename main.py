@@ -112,7 +112,8 @@ def get_info(url: str):
         
         print(f"Total formats from all clients: {len(all_formats)}")
         
-        # Deduplicate and process formats
+        # Filter for standard resolutions only (144p, 240p, 360p, 480p, 720p, 1080p, 1440p, 2160p)
+        standard_resolutions = {144, 240, 360, 480, 720, 1080, 1440, 2160}
         video_resolutions = {}
         seen_format_ids = set()
         
@@ -122,25 +123,34 @@ def get_info(url: str):
                 continue
             seen_format_ids.add(format_id)
             
-            # Get all video formats that have a URL
-            if f.get('vcodec') != 'none' and f.get('url'):
-                res = f.get('height')
-                
-                if res and res >= 144:
+            # Get video formats that have both video and audio OR can be merged
+            vcodec = f.get('vcodec', 'none')
+            acodec = f.get('acodec', 'none')
+            res = f.get('height')
+            
+            # Only include formats with standard resolutions
+            if res and res in standard_resolutions:
+                # Prefer formats that have both video and audio
+                if vcodec != 'none' and f.get('url'):
                     if res not in video_resolutions:
                         video_resolutions[res] = []
-                    video_resolutions[res].append(format_id)
-                    print(f"Added format {format_id}: {res}p")
+                    
+                    # Prioritize formats with audio
+                    priority = 0 if acodec != 'none' else 1
+                    video_resolutions[res].append((format_id, priority))
+                    print(f"Added format {format_id}: {res}p (has_audio: {acodec != 'none'})")
         
         # Sort resolutions from highest to lowest
         sorted_res = sorted(video_resolutions.keys(), reverse=True)
-        video_formats = [
-            {
+        video_formats = []
+        
+        for r in sorted_res:
+            # Sort by priority (formats with audio first)
+            formats_for_res = sorted(video_resolutions[r], key=lambda x: x[1])
+            video_formats.append({
                 "resolution": f"{r}p", 
-                "format_id": video_resolutions[r][0]
-            } 
-            for r in sorted_res
-        ]
+                "format_id": formats_for_res[0][0]  # Take the best format
+            })
         
         print(f"Final video_formats: {video_formats}")
         
