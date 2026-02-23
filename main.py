@@ -576,6 +576,7 @@ def get_instagram_info(url: str):
             'quiet': False,
             'no_warnings': False,
             'nocheckcertificate': True,
+            'ignoreerrors': True,  # Don't fail on errors, try to extract what we can
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             },
@@ -585,6 +586,17 @@ def get_instagram_info(url: str):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(clean_url, download=False)
             
+            # Handle playlist (carousel posts)
+            if info.get('_type') == 'playlist':
+                print(f"Instagram carousel detected with {len(info.get('entries', []))} items")
+                # For carousel, we'll just take the first item or show as image
+                entries = info.get('entries', [])
+                if entries:
+                    # Use first entry for metadata
+                    first_entry = entries[0]
+                    if first_entry:
+                        info = first_entry
+                
             print(f"Instagram info extracted: title={info.get('title')}, uploader={info.get('uploader')}")
             
             # Instagram can have multiple formats
@@ -630,7 +642,7 @@ def get_instagram_info(url: str):
                         "ext": "mp4"
                     })
             else:
-                # For image posts
+                # For image posts (including carousel)
                 unique_formats = [{
                     "resolution": "Original",
                     "format_id": "best",
@@ -639,13 +651,25 @@ def get_instagram_info(url: str):
             
             print(f"Returning {len(unique_formats)} unique formats, is_video: {is_video}")
             
-            # Get username - try multiple fields
-            username = info.get('uploader') or info.get('uploader_id') or info.get('channel') or 'Unknown'
+            # Get username - try multiple fields or extract from title
+            username = info.get('uploader') or info.get('uploader_id') or info.get('channel')
+            
+            # If still no username, try to extract from title "Post by username" or "Video by username"
+            if not username:
+                title = info.get('title', '')
+                if ' by ' in title:
+                    username = title.split(' by ')[-1].strip()
+                else:
+                    username = 'Unknown'
+            
+            # Format username
+            if username and username != 'Unknown':
+                username = f"@{username}" if not username.startswith('@') else username
             
             return {
                 "title": info.get('title', 'Instagram Post'),
                 "thumbnail": info.get('thumbnail'),
-                "channel": f"@{username}" if not username.startswith('@') else username,
+                "channel": username,
                 "duration": info.get('duration', 0),
                 "description": info.get('description', ''),
                 "video_formats": unique_formats,
