@@ -52,15 +52,16 @@ def get_info(url: str):
     try:
         # Try multiple strategies to get all formats
         all_formats = []
+        info = None
         
-        # Strategy 1: Android client (usually has most formats)
+        # Strategy 1: Android creator client (usually has most formats)
         try:
             ydl_opts_android = {
                 'quiet': True,
                 'no_warnings': True,
                 'extractor_args': {
                     'youtube': {
-                        'player_client': ['android_creator'],  # Try creator client
+                        'player_client': ['android_creator'],
                     }
                 },
                 'geo_bypass': True,
@@ -69,50 +70,86 @@ def get_info(url: str):
             }
             with yt_dlp.YoutubeDL(ydl_opts_android) as ydl:
                 info = ydl.extract_info(url, download=False)
-                all_formats.extend(info.get('formats', []))
-                print(f"Android creator client: {len(info.get('formats', []))} formats")
+                formats = info.get('formats', [])
+                all_formats.extend(formats)
+                print(f"Android creator client: {len(formats)} formats")
         except Exception as e:
             print(f"Android creator client failed: {e}")
         
-        # Strategy 2: iOS client
-        try:
-            ydl_opts_ios = {
-                'quiet': True,
-                'no_warnings': True,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['ios'],
-                    }
-                },
-            }
-            with yt_dlp.YoutubeDL(ydl_opts_ios) as ydl:
-                info_ios = ydl.extract_info(url, download=False)
-                all_formats.extend(info_ios.get('formats', []))
-                print(f"iOS client: {len(info_ios.get('formats', []))} formats")
-        except Exception as e:
-            print(f"iOS client failed: {e}")
+        # Strategy 2: Try android (not creator) if we got less than 15 formats
+        if len(all_formats) < 15:
+            try:
+                ydl_opts_android_regular = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': ['android'],
+                        }
+                    },
+                    'geo_bypass': True,
+                    'geo_bypass_country': 'US',
+                    **get_ydl_proxy_opts(),
+                }
+                with yt_dlp.YoutubeDL(ydl_opts_android_regular) as ydl:
+                    info_android = ydl.extract_info(url, download=False)
+                    formats = info_android.get('formats', [])
+                    all_formats.extend(formats)
+                    if not info:
+                        info = info_android
+                    print(f"Android regular client: {len(formats)} formats")
+            except Exception as e:
+                print(f"Android regular client failed: {e}")
         
-        # Strategy 3: Web client
-        try:
-            ydl_opts_web = {
-                'quiet': True,
-                'no_warnings': True,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['web'],
-                    }
-                },
-            }
-            with yt_dlp.YoutubeDL(ydl_opts_web) as ydl:
-                info_web = ydl.extract_info(url, download=False)
-                all_formats.extend(info_web.get('formats', []))
-                print(f"Web client: {len(info_web.get('formats', []))} formats")
-        except Exception as e:
-            print(f"Web client failed: {e}")
+        # Strategy 3: iOS client
+        if len(all_formats) < 15:
+            try:
+                ydl_opts_ios = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': ['ios'],
+                        }
+                    },
+                    **get_ydl_proxy_opts(),
+                }
+                with yt_dlp.YoutubeDL(ydl_opts_ios) as ydl:
+                    info_ios = ydl.extract_info(url, download=False)
+                    formats = info_ios.get('formats', [])
+                    all_formats.extend(formats)
+                    if not info:
+                        info = info_ios
+                    print(f"iOS client: {len(formats)} formats")
+            except Exception as e:
+                print(f"iOS client failed: {e}")
+        
+        # Strategy 4: Web client as last resort
+        if len(all_formats) < 15:
+            try:
+                ydl_opts_web = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': ['web'],
+                        }
+                    },
+                    **get_ydl_proxy_opts(),
+                }
+                with yt_dlp.YoutubeDL(ydl_opts_web) as ydl:
+                    info_web = ydl.extract_info(url, download=False)
+                    formats = info_web.get('formats', [])
+                    all_formats.extend(formats)
+                    if not info:
+                        info = info_web
+                    print(f"Web client: {len(formats)} formats")
+            except Exception as e:
+                print(f"Web client failed: {e}")
         
         print(f"Total formats from all clients: {len(all_formats)}")
         
-        # Filter for standard resolutions only (144p, 240p, 360p, 480p, 720p, 1080p, 1440p, 2160p)
+        # Filter for standard resolutions only
         standard_resolutions = {144, 240, 360, 480, 720, 1080, 1440, 2160}
         video_resolutions = {}
         seen_format_ids = set()
@@ -123,14 +160,12 @@ def get_info(url: str):
                 continue
             seen_format_ids.add(format_id)
             
-            # Get video formats that have both video and audio OR can be merged
             vcodec = f.get('vcodec', 'none')
             acodec = f.get('acodec', 'none')
             res = f.get('height')
             
             # Only include formats with standard resolutions
             if res and res in standard_resolutions:
-                # Prefer formats that have both video and audio
                 if vcodec != 'none' and f.get('url'):
                     if res not in video_resolutions:
                         video_resolutions[res] = []
@@ -149,12 +184,14 @@ def get_info(url: str):
             formats_for_res = sorted(video_resolutions[r], key=lambda x: x[1])
             video_formats.append({
                 "resolution": f"{r}p", 
-                "format_id": formats_for_res[0][0]  # Take the best format
+                "format_id": formats_for_res[0][0]
             })
         
         print(f"Final video_formats: {video_formats}")
         
-        # Use info from first successful client
+        if not info:
+            raise Exception("Failed to get video info from all clients")
+        
         return {
             "title": info.get('title'),
             "thumbnail": info.get('thumbnail'),
