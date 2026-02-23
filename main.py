@@ -339,11 +339,50 @@ def get_tiktok_info(url: str):
             detail=f"Error mengambil info TikTok: {error_msg}"
         )
 
-# --- Instagram (yt-dlp) ---
+# --- Instagram (yt-dlp: video + photo) ---
+
+def _instagram_fetch_image_info(url: str):
+    """Fetch Instagram photo post info via oEmbed (fallback when yt-dlp says no video)."""
+    try:
+        r = requests.get(
+            "https://api.instagram.com/oembed",
+            params={"url": url},
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        # oEmbed returns thumbnail_url (can be the full-res image for single photo)
+        image_url = data.get("thumbnail_url") or data.get("url")
+        if not image_url:
+            return None
+        author = data.get("author_name") or "Instagram"
+        title = data.get("title") or "Instagram Photo"
+        return {
+            "title": (title[:200] if title else "Instagram Photo"),
+            "thumbnail": image_url,
+            "channel": author,
+            "duration": None,
+            "video_formats": [
+                {
+                    "resolution": "Photo",
+                    "format_id": "image",
+                    "ext": "jpg",
+                    "download_url": image_url,
+                }
+            ],
+            "platform": "instagram",
+            "is_photo": True,
+        }
+    except Exception as e:
+        print(f"Instagram oEmbed fallback error: {e}")
+        return None
+
 
 @app.get("/instagram/info")
 def get_instagram_info(url: str):
-    """Get Instagram post/reel info using yt-dlp"""
+    """Get Instagram post/reel (video) or photo info using yt-dlp; photo fallback via oEmbed."""
     try:
         ydl_opts = {
             'quiet': True,
@@ -364,7 +403,6 @@ def get_instagram_info(url: str):
                     info = ydl2.extract_info(first['url'], download=False) or first
             elif isinstance(first, dict):
                 info = first
-            # else keep info as is
 
         title = info.get('title') or info.get('description') or 'Instagram'
         uploader = info.get('uploader') or info.get('uploader_id') or 'Instagram'
@@ -373,9 +411,7 @@ def get_instagram_info(url: str):
 
         formats = info.get('formats', [])
         video_formats = []
-        # Prefer best combined or best video
         if formats:
-            # Build list: best video, or single "best" option for simplicity
             height_set = set()
             for f in formats:
                 h = f.get('height')
@@ -398,14 +434,15 @@ def get_instagram_info(url: str):
             'platform': 'instagram',
         }
     except ExtractorError as e:
-        import traceback
-        print(f"Instagram info extractor error: {e}\n{traceback.format_exc()}")
         msg = str(e)
         if 'There is no video in this post' in msg:
-            # Foto-only post – beri pesan yang jelas ke frontend
+            # Photo-only post: fallback to oEmbed to get image URL
+            fallback = _instagram_fetch_image_info(url)
+            if fallback:
+                return fallback
             raise HTTPException(
                 status_code=400,
-                detail="Instagram post ini hanya berisi foto (tidak ada video). Saat ini hanya Reels / video yang bisa di-download."
+                detail="Tidak bisa mengambil info post foto Instagram. Coba link Reels/video.",
             )
         raise HTTPException(status_code=400, detail=f"Instagram extractor: {msg}")
     except Exception as e:
@@ -415,12 +452,57 @@ def get_instagram_info(url: str):
 
 @app.get("/instagram/download")
 def download_instagram(url: str, background_tasks: BackgroundTasks, format_id: Optional[str] = "best", task_id: Optional[str] = None):
-    """Download Instagram video using yt-dlp"""
+    """Download Instagram video (yt-dlp) or photo (direct URL from info)."""
     if not task_id:
         task_id = str(uuid.uuid4())
     base_name = f"temp_ig_{task_id}"
     download_progress[task_id] = {"status": "starting", "progress": 0.0}
 
+    # Photo: get info (hits oEmbed fallback), then download from download_url
+    if format_id == "image":
+        try:
+            info_resp = get_instagram_info(url)
+            formats = info_resp.get("video_formats") or []
+            download_url = None
+            file_ext = "jpg"
+            for f in formats:
+                if f.get("format_id") == "image" and f.get("download_url"):
+                    download_url = f["download_url"]
+                    file_ext = f.get("ext", "jpg")
+                    break
+            if not download_url:
+                raise HTTPException(status_code=400, detail="URL foto tidak ditemukan.")
+            download_progress[task_id] = {"status": "downloading", "progress": 0.1}
+            r = requests.get(download_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, stream=True, timeout=30)
+            if r.status_code != 200:
+                raise Exception(f"Gagal download foto: HTTP {r.status_code}")
+            file_path = f"{base_name}.{file_ext}"
+            total_size = int(r.headers.get("content-length", 0))
+            downloaded = 0
+            with open(file_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            download_progress[task_id] = {"status": "downloading", "progress": downloaded / total_size}
+            download_progress[task_id] = {"status": "completed", "progress": 1.0}
+            safe_title = re.sub(r'[\\/:*?"<>|]', '_', (info_resp.get("title") or info_resp.get("channel") or "instagram")).strip() or f"instagram_{task_id}"
+            media_type = "image/jpeg" if file_ext in ("jpg", "jpeg") else "image/png"
+
+            def cleanup_all():
+                cleanup_files(base_name)
+                download_progress.pop(task_id, None)
+            background_tasks.add_task(cleanup_all)
+            return FileResponse(file_path, filename=f"{safe_title}.{file_ext}", media_type=media_type)
+        except HTTPException:
+            raise
+        except Exception as e:
+            cleanup_files(base_name)
+            download_progress.pop(task_id, None)
+            raise HTTPException(status_code=400, detail=f"Instagram photo download: {str(e)}")
+
+    # Video: yt-dlp
     def my_hook(d):
         if d['status'] == 'downloading':
             total = d.get('total_bytes') or d.get('total_bytes_estimate', 1)
@@ -441,7 +523,6 @@ def download_instagram(url: str, background_tasks: BackgroundTasks, format_id: O
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         files = glob.glob(f"{base_name}*")
-        # Exclude .part temporary files
         files = [f for f in files if not f.endswith('.part') and os.path.isfile(f)]
         if not files:
             raise Exception("File not found after download")
@@ -475,7 +556,7 @@ def download_instagram(url: str, background_tasks: BackgroundTasks, format_id: O
         if 'There is no video in this post' in msg:
             raise HTTPException(
                 status_code=400,
-                detail="Instagram post ini hanya berisi foto (tidak ada video). Saat ini hanya Reels / video yang bisa di-download."
+                detail="Post ini hanya foto. Gunakan tombol Download Photo di layar info.",
             )
         raise HTTPException(status_code=400, detail=f"Instagram extractor: {msg}")
     except Exception as e:
