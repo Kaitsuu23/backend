@@ -383,52 +383,64 @@ def _instagram_fetch_image_info(url: str):
                 print(f"Warning: HTML response is very short ({len(html)} chars), might be blocked")
             
             import re
+
+            image_urls = []
             
             # Try multiple extraction methods
             
-            # Method 1a: Look for og:image meta tag
+            # Method 1a: Look for og:image meta tag (usually first image in carousel)
             og_image_match = re.search(r'<meta property="og:image" content="([^"]+)"', html)
             if og_image_match:
-                image_url = og_image_match.group(1)
-                print(f"Found image URL via og:image: {image_url[:80]}...")
+                first_image_url = og_image_match.group(1)
+                image_urls.append(first_image_url)
+                print(f"Found image URL via og:image: {first_image_url[:80]}...")
             else:
-                # Method 1b: Look for JSON data in script tags
-                print("og:image not found, trying to extract from embedded JSON...")
-                
-                # Instagram embeds data in <script type="application/ld+json">
-                json_ld_match = re.search(r'<script type="application/ld\+json">(.+?)</script>', html, re.DOTALL)
-                if json_ld_match:
-                    try:
-                        json_data = json.loads(json_ld_match.group(1))
-                        # Try to get image from JSON-LD
-                        if isinstance(json_data, dict):
-                            image_url = json_data.get('image') or json_data.get('contentUrl')
-                            if image_url:
-                                print(f"Found image URL via JSON-LD: {image_url[:80]}...")
-                    except:
-                        pass
-                
-                # Method 1c: Look for window._sharedData
-                if not og_image_match and not json_ld_match:
-                    print("Trying window._sharedData extraction...")
-                    shared_data_match = re.search(r'window\._sharedData = ({.+?});</script>', html, re.DOTALL)
-                    if shared_data_match:
-                        try:
-                            shared_data = json.loads(shared_data_match.group(1))
-                            # Navigate through the nested structure
-                            entry_data = shared_data.get('entry_data', {})
-                            post_page = entry_data.get('PostPage', [{}])[0]
-                            media = post_page.get('graphql', {}).get('shortcode_media', {})
-                            image_url = media.get('display_url') or media.get('display_src')
-                            if image_url:
-                                print(f"Found image URL via _sharedData: {image_url[:80]}...")
-                        except Exception as e:
-                            print(f"Failed to parse _sharedData: {e}")
+                first_image_url = None
             
-            # If we found an image URL, extract other metadata
-            if og_image_match or 'image_url' in locals():
-                if not 'image_url' in locals():
-                    image_url = og_image_match.group(1)
+            # Method 1b: Look for JSON data in script tags (JSON-LD)
+            json_ld_match = re.search(r'<script type="application/ld\+json">(.+?)</script>', html, re.DOTALL)
+            if json_ld_match:
+                try:
+                    json_data = json.loads(json_ld_match.group(1))
+                    if isinstance(json_data, dict):
+                        json_image = json_data.get('image') or json_data.get('contentUrl')
+                        if json_image and json_image not in image_urls:
+                            image_urls.append(json_image)
+                            print(f"Found image URL via JSON-LD: {json_image[:80]}...")
+                except Exception as e:
+                    print(f"Failed to parse JSON-LD: {e}")
+            
+            # Method 1c: Look for window._sharedData (can contain carousel images)
+            print("Trying window._sharedData extraction...")
+            shared_data_match = re.search(r'window\._sharedData = ({.+?});</script>', html, re.DOTALL)
+            if shared_data_match:
+                try:
+                    shared_data = json.loads(shared_data_match.group(1))
+                    entry_data = shared_data.get('entry_data', {})
+                    post_page = entry_data.get('PostPage', [{}])[0]
+                    media = post_page.get('graphql', {}).get('shortcode_media', {})
+                    
+                    # Single media display
+                    main_display = media.get('display_url') or media.get('display_src')
+                    if main_display and main_display not in image_urls:
+                        image_urls.append(main_display)
+                        print(f"Found main image via _sharedData: {main_display[:80]}...")
+                    
+                    # Carousel: edge_sidecar_to_children
+                    sidecar = media.get('edge_sidecar_to_children', {})
+                    edges = sidecar.get('edges', [])
+                    for idx, edge in enumerate(edges):
+                        node = (edge or {}).get('node', {})
+                        child_url = node.get('display_url') or node.get('display_src')
+                        if child_url and child_url not in image_urls:
+                            image_urls.append(child_url)
+                            print(f"Found carousel image {idx + 1} via _sharedData: {child_url[:80]}...")
+                except Exception as e:
+                    print(f"Failed to parse _sharedData: {e}")
+            
+            # If we found one or more image URLs, extract other metadata
+            if image_urls:
+                main_image = image_urls[0]
                 
                 # Try to get title
                 og_title_match = re.search(r'<meta property="og:title" content="([^"]+)"', html)
@@ -444,21 +456,25 @@ def _instagram_fetch_image_info(url: str):
                     username_match = re.search(r'instagram\.com/([^/]+)/', url)
                 author = f"@{username_match.group(1)}" if username_match else "Instagram"
                 
-                print(f"Successfully extracted photo info: {title[:50]}... by {author}")
+                print(f"Successfully extracted {len(image_urls)} photo(s): {title[:50]}... by {author}")
+
+                video_formats = []
+                for idx, img_url in enumerate(image_urls):
+                    video_formats.append(
+                        {
+                            "resolution": f"Photo {idx + 1}",
+                            "format_id": f"image_{idx}",
+                            "ext": "jpg",
+                            "download_url": img_url,
+                        }
+                    )
                 
                 return {
                     "title": (title[:200] if title else "Instagram Photo"),
-                    "thumbnail": image_url,
+                    "thumbnail": main_image,
                     "channel": author,
                     "duration": None,
-                    "video_formats": [
-                        {
-                            "resolution": "Photo",
-                            "format_id": "image",
-                            "ext": "jpg",
-                            "download_url": image_url,
-                        }
-                    ],
+                    "video_formats": video_formats,
                     "platform": "instagram",
                     "is_photo": True,
                 }
@@ -499,8 +515,8 @@ def _instagram_fetch_image_info(url: str):
                             "duration": None,
                             "video_formats": [
                                 {
-                                    "resolution": "Photo",
-                                    "format_id": "image",
+                                    "resolution": "Photo 1",
+                                    "format_id": "image_0",
                                     "ext": "jpg",
                                     "download_url": image_url,
                                 }
@@ -641,18 +657,24 @@ def download_instagram(url: str, background_tasks: BackgroundTasks, format_id: O
     base_name = f"temp_ig_{task_id}"
     download_progress[task_id] = {"status": "starting", "progress": 0.0}
 
-    # Photo: get info (hits oEmbed fallback), then download from download_url
-    if format_id == "image":
+    # Photo: get info (hits scraping/oEmbed fallback), then download from download_url
+    if format_id and format_id.startswith("image"):
         try:
             info_resp = get_instagram_info(url)
             formats = info_resp.get("video_formats") or []
             download_url = None
             file_ext = "jpg"
             for f in formats:
-                if f.get("format_id") == "image" and f.get("download_url"):
+                if f.get("format_id") == format_id and f.get("download_url"):
                     download_url = f["download_url"]
                     file_ext = f.get("ext", "jpg")
                     break
+            # Fallback: if specific image_X not found, use first
+            if not download_url and formats:
+                first = formats[0]
+                if first.get("download_url"):
+                    download_url = first["download_url"]
+                    file_ext = first.get("ext", "jpg")
             if not download_url:
                 raise HTTPException(status_code=400, detail="URL foto tidak ditemukan.")
             download_progress[task_id] = {"status": "downloading", "progress": 0.1}
