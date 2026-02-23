@@ -10,6 +10,7 @@ import re
 import requests
 import json
 from proxy_config import get_ydl_proxy_opts
+from yt_dlp.utils import ExtractorError
 
 app = FastAPI()
 
@@ -388,7 +389,6 @@ def get_instagram_info(url: str):
             video_formats.sort(key=lambda x: int(x['resolution'].replace('p', '') or 0), reverse=True)
         if not video_formats:
             video_formats = [{'resolution': 'Best', 'format_id': 'best', 'ext': 'mp4'}]
-
         return {
             'title': title[:200] if title else 'Instagram',
             'thumbnail': thumbnail,
@@ -397,6 +397,17 @@ def get_instagram_info(url: str):
             'video_formats': video_formats,
             'platform': 'instagram',
         }
+    except ExtractorError as e:
+        import traceback
+        print(f"Instagram info extractor error: {e}\n{traceback.format_exc()}")
+        msg = str(e)
+        if 'There is no video in this post' in msg:
+            # Foto-only post – beri pesan yang jelas ke frontend
+            raise HTTPException(
+                status_code=400,
+                detail="Instagram post ini hanya berisi foto (tidak ada video). Saat ini hanya Reels / video yang bisa di-download."
+            )
+        raise HTTPException(status_code=400, detail=f"Instagram extractor: {msg}")
     except Exception as e:
         import traceback
         print(f"Instagram info error: {e}\n{traceback.format_exc()}")
@@ -457,6 +468,16 @@ def download_instagram(url: str, background_tasks: BackgroundTasks, format_id: O
 
         media_type = "video/mp4" if ext in ('mp4', 'webm') else "image/jpeg" if ext in ('jpg', 'jpeg') else "image/png"
         return FileResponse(file_path, filename=f"{safe_title}.{ext}", media_type=media_type)
+    except ExtractorError as e:
+        cleanup_files(base_name)
+        download_progress.pop(task_id, None)
+        msg = str(e)
+        if 'There is no video in this post' in msg:
+            raise HTTPException(
+                status_code=400,
+                detail="Instagram post ini hanya berisi foto (tidak ada video). Saat ini hanya Reels / video yang bisa di-download."
+            )
+        raise HTTPException(status_code=400, detail=f"Instagram extractor: {msg}")
     except Exception as e:
         cleanup_files(base_name)
         download_progress.pop(task_id, None)
