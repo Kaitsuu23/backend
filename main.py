@@ -1,7 +1,7 @@
 import os
 import glob
 from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 import yt_dlp
@@ -648,6 +648,28 @@ def get_instagram_info(url: str):
             )
         
         raise HTTPException(status_code=400, detail=f"Instagram: {error_msg}")
+
+
+@app.get("/proxy-image")
+def proxy_image(url: str):
+    """Proxy image through backend to avoid Instagram hotlink / CORS issues."""
+    try:
+        if not url:
+            raise HTTPException(status_code=400, detail="Missing url")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.instagram.com/",
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        }
+        resp = requests.get(url, headers=headers, stream=True, timeout=15)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail="Failed to fetch image")
+        content_type = resp.headers.get("content-type", "image/jpeg")
+        return StreamingResponse(resp.raw, media_type=content_type)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Image proxy error: {str(e)}")
 
 @app.get("/instagram/download")
 def download_instagram(url: str, background_tasks: BackgroundTasks, format_id: Optional[str] = "best", task_id: Optional[str] = None):
