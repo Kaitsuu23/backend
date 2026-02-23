@@ -560,6 +560,176 @@ def download_audio(url: str, background_tasks: BackgroundTasks, task_id: Optiona
         download_progress.pop(task_id, None)
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.get("/instagram/info")
+def get_instagram_info(url: str):
+    """Get Instagram post/story information using yt-dlp"""
+    try:
+        # Clean the URL
+        if '?' in url:
+            clean_url = url.split('?')[0]
+        else:
+            clean_url = url
+            
+        print(f"Fetching Instagram info for: {clean_url}")
+        
+        ydl_opts = {
+            'quiet': False,
+            'no_warnings': False,
+            'nocheckcertificate': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            },
+            **get_ydl_proxy_opts(),
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(clean_url, download=False)
+            
+            # Instagram can have multiple formats
+            formats = info.get('formats', [])
+            video_formats = []
+            
+            print(f"Found {len(formats)} formats")
+            
+            # Get video formats
+            for f in formats:
+                if f.get('vcodec') != 'none' and f.get('url'):
+                    res = f.get('height')
+                    if res and res >= 144:
+                        video_formats.append({
+                            "resolution": f"{res}p",
+                            "format_id": f.get('format_id'),
+                            "ext": f.get('ext', 'mp4')
+                        })
+            
+            # Remove duplicates and sort
+            seen = set()
+            unique_formats = []
+            for fmt in video_formats:
+                if fmt['resolution'] not in seen:
+                    seen.add(fmt['resolution'])
+                    unique_formats.append(fmt)
+            
+            unique_formats.sort(key=lambda x: int(x['resolution'][:-1]), reverse=True)
+            
+            # If no video formats, might be image post
+            if not unique_formats:
+                # For image posts, add a default format
+                unique_formats.append({
+                    "resolution": "Original",
+                    "format_id": "best",
+                    "ext": "jpg"
+                })
+            
+            print(f"Returning {len(unique_formats)} unique formats")
+            
+            return {
+                "title": info.get('title', 'Instagram Post'),
+                "thumbnail": info.get('thumbnail'),
+                "channel": info.get('uploader', info.get('uploader_id', 'Unknown')),
+                "duration": info.get('duration', 0),
+                "description": info.get('description', ''),
+                "video_formats": unique_formats,
+                "platform": "instagram"
+            }
+            
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        full_traceback = traceback.format_exc()
+        print(f"Error Instagram info: {error_msg}")
+        print(f"Full traceback:\n{full_traceback}")
+        
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error mengambil info Instagram: {error_msg}"
+        )
+
+@app.get("/instagram/download")
+def download_instagram(url: str, background_tasks: BackgroundTasks, format_id: Optional[str] = "best", task_id: Optional[str] = None):
+    """Download Instagram post/story using yt-dlp"""
+    if not task_id:
+        task_id = str(uuid.uuid4())
+    base_name = f"temp_{task_id}"
+
+    download_progress[task_id] = {"status": "starting", "progress": 0.0}
+
+    def my_hook(d):
+        if d['status'] == 'downloading':
+            total = d.get('total_bytes') or d.get('total_bytes_estimate', 1)
+            downloaded = d.get('downloaded_bytes', 0)
+            if total > 0:
+                download_progress[task_id] = {"status": "downloading", "progress": downloaded / total}
+        elif d['status'] == 'finished':
+            download_progress[task_id] = {"status": "processing", "progress": 1.0}
+    
+    # Clean the URL
+    if '?' in url:
+        clean_url = url.split('?')[0]
+    else:
+        clean_url = url
+    
+    ydl_opts = {
+        'format': format_id if format_id != "best" else 'best',
+        'outtmpl': f"{base_name}.%(ext)s",
+        'quiet': False,
+        'progress_hooks': [my_hook],
+        'nocheckcertificate': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+        **get_ydl_proxy_opts(),
+    }
+    
+    try:
+        print(f"Downloading Instagram: {clean_url}")
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(clean_url, download=True)
+            
+        files = glob.glob(f"{base_name}*")
+        if not files:
+            raise Exception("File tidak ditemukan setelah download")
+        
+        # Generate simple filename: instagram_{timestamp}.ext
+        import time
+        timestamp = str(int(time.time()))
+        
+        file_path = files[0]
+        file_ext = file_path.split('.')[-1]
+        
+        safe_title = f"instagram_{timestamp}"
+
+        def cleanup_all():
+            cleanup_files(base_name)
+            download_progress.pop(task_id, None)
+
+        background_tasks.add_task(cleanup_all)
+        
+        # Set appropriate media type
+        if file_ext in ["jpg", "jpeg"]:
+            media_type = "image/jpeg"
+        elif file_ext == "png":
+            media_type = "image/png"
+        else:
+            media_type = "video/mp4"
+        
+        final_filename = f"{safe_title}.{file_ext}"
+        print(f"Final filename: {final_filename}")
+        
+        return FileResponse(file_path, filename=final_filename, media_type=media_type)
+        
+    except Exception as e:
+        cleanup_files(base_name)
+        download_progress.pop(task_id, None)
+        error_msg = str(e)
+        print(f"Error download Instagram: {error_msg}")
+        
+        raise HTTPException(
+            status_code=400,
+            detail=f"Gagal download Instagram: {error_msg}"
+        )
+
 if __name__ == "__main__":
     import uvicorn
     import os
