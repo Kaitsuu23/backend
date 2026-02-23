@@ -389,6 +389,25 @@ def get_instagram_info(url: str):
             'no_warnings': True,
             'extract_flat': False,
         }
+        
+        # Add cookie support from environment variable
+        instagram_cookies = os.environ.get('INSTAGRAM_COOKIES', '')
+        if instagram_cookies:
+            # Support cookies from browser or cookies.txt format
+            # User can set INSTAGRAM_COOKIES_FROM_BROWSER=firefox or chrome
+            cookies_from_browser = os.environ.get('INSTAGRAM_COOKIES_FROM_BROWSER', '')
+            if cookies_from_browser:
+                ydl_opts['cookiesfrombrowser'] = (cookies_from_browser,)
+                print(f"Using cookies from browser: {cookies_from_browser}")
+            else:
+                # Write cookies to temp file
+                import tempfile
+                cookie_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt')
+                cookie_file.write(instagram_cookies)
+                cookie_file.close()
+                ydl_opts['cookiefile'] = cookie_file.name
+                print(f"Using cookies from file: {cookie_file.name}")
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
         if not info:
@@ -519,6 +538,20 @@ def download_instagram(url: str, background_tasks: BackgroundTasks, format_id: O
         'progress_hooks': [my_hook],
         'nocheckcertificate': True,
     }
+    
+    # Add cookie support for download too
+    instagram_cookies = os.environ.get('INSTAGRAM_COOKIES', '')
+    if instagram_cookies:
+        cookies_from_browser = os.environ.get('INSTAGRAM_COOKIES_FROM_BROWSER', '')
+        if cookies_from_browser:
+            ydl_opts['cookiesfrombrowser'] = (cookies_from_browser,)
+        else:
+            import tempfile
+            cookie_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt')
+            cookie_file.write(instagram_cookies)
+            cookie_file.close()
+            ydl_opts['cookiefile'] = cookie_file.name
+    
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
