@@ -577,7 +577,7 @@ def get_instagram_info(url: str):
             'quiet': False,
             'no_warnings': False,
             'nocheckcertificate': True,
-            'extract_flat': False,  # Extract full info for playlist items
+            'extract_flat': 'discard_in_playlist',  # Don't use flat extraction
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             },
@@ -587,7 +587,16 @@ def get_instagram_info(url: str):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(clean_url, download=False)
             
-            print(f"Instagram info extracted: title={info.get('title')}, uploader={info.get('uploader')}")
+            # Debug: print full info structure
+            print(f"Instagram info extracted: title={info.get('title')}, uploader={info.get('uploader')}, type={info.get('_type')}")
+            print(f"Available keys in info: {list(info.keys())}")
+            if info.get('_type') == 'playlist':
+                print(f"Entries count: {len(info.get('entries', []))}")
+                if info.get('entries'):
+                    print(f"First entry keys: {list(info['entries'][0].keys()) if info['entries'][0] else 'None'}")
+            print(f"Formats count: {len(info.get('formats', []))}")
+            print(f"URL: {info.get('url')}")
+            print(f"Thumbnail: {info.get('thumbnail')}")
             
             # Variables for metadata
             title = info.get('title', 'Instagram Post')
@@ -602,48 +611,96 @@ def get_instagram_info(url: str):
             is_video = False
             
             if is_carousel:
-                print(f"Instagram carousel detected with {len(info.get('entries', []))} items")
                 entries = info.get('entries', [])
+                print(f"Instagram carousel detected with {len(entries)} items")
                 
-                # For carousel, create format for each item (image or video)
-                for idx, entry in enumerate(entries):
-                    if entry:
-                        # Check if entry is a video or image
-                        entry_formats = entry.get('formats', [])
-                        entry_is_video = any(f.get('vcodec') and f.get('vcodec') != 'none' for f in entry_formats)
+                # If entries is empty, try to get formats from main info
+                if not entries:
+                    print("No entries found, checking main info for formats")
+                    formats = info.get('formats', [])
+                    
+                    # Check if main info has formats (single image case)
+                    if formats:
+                        # Single image
+                        best_format = None
+                        for f in formats:
+                            if f.get('url'):
+                                if not best_format or (f.get('height', 0) > best_format.get('height', 0)):
+                                    best_format = f
                         
-                        if entry_is_video:
-                            is_video = True
-                            # Get best video format URL
-                            best_format = None
-                            for f in entry_formats:
-                                if f.get('vcodec') != 'none' and f.get('url'):
-                                    if not best_format or (f.get('height', 0) > best_format.get('height', 0)):
-                                        best_format = f
+                        if best_format:
+                            video_formats.append({
+                                "resolution": "Original",
+                                "format_id": "best",
+                                "ext": "jpg",
+                                "download_url": best_format.get('url')
+                            })
+                            if not thumbnail:
+                                thumbnail = best_format.get('url')
+                    else:
+                        # Try to get URL directly from info
+                        img_url = info.get('url') or info.get('thumbnail')
+                        if img_url:
+                            video_formats.append({
+                                "resolution": "Original",
+                                "format_id": "best",
+                                "ext": "jpg",
+                                "download_url": img_url
+                            })
+                            if not thumbnail:
+                                thumbnail = img_url
+                else:
+                    # Process entries
+                    for idx, entry in enumerate(entries):
+                        if entry:
+                            # Check if entry is a video or image
+                            entry_formats = entry.get('formats', [])
+                            entry_is_video = any(f.get('vcodec') and f.get('vcodec') != 'none' for f in entry_formats)
                             
-                            if best_format:
-                                video_formats.append({
-                                    "resolution": f"Video {idx + 1}",
-                                    "format_id": f"video_{idx}",
-                                    "ext": "mp4",
-                                    "download_url": best_format.get('url'),
-                                    "entry_url": entry.get('url') or entry.get('webpage_url')
-                                })
-                        else:
-                            # Image
-                            img_url = entry.get('url') or entry.get('thumbnail')
-                            if img_url:
-                                video_formats.append({
-                                    "resolution": f"Image {idx + 1}",
-                                    "format_id": f"img_{idx}",
-                                    "ext": "jpg",
-                                    "download_url": img_url,
-                                    "entry_url": entry.get('url') or entry.get('webpage_url')
-                                })
-                        
-                        # Get thumbnail from first entry
-                        if not thumbnail:
-                            thumbnail = entry.get('thumbnail') or entry.get('url')
+                            if entry_is_video:
+                                is_video = True
+                                # Get best video format URL
+                                best_format = None
+                                for f in entry_formats:
+                                    if f.get('vcodec') != 'none' and f.get('url'):
+                                        if not best_format or (f.get('height', 0) > best_format.get('height', 0)):
+                                            best_format = f
+                                
+                                if best_format:
+                                    video_formats.append({
+                                        "resolution": f"Video {idx + 1}",
+                                        "format_id": f"video_{idx}",
+                                        "ext": "mp4",
+                                        "download_url": best_format.get('url'),
+                                        "entry_url": entry.get('url') or entry.get('webpage_url')
+                                    })
+                            else:
+                                # Image - try multiple sources
+                                img_url = None
+                                if entry_formats:
+                                    # Get URL from formats
+                                    for f in entry_formats:
+                                        if f.get('url'):
+                                            img_url = f.get('url')
+                                            break
+                                
+                                if not img_url:
+                                    img_url = entry.get('url') or entry.get('thumbnail')
+                                
+                                if img_url:
+                                    video_formats.append({
+                                        "resolution": f"Image {idx + 1}",
+                                        "format_id": f"img_{idx}",
+                                        "ext": "jpg",
+                                        "download_url": img_url,
+                                        "entry_url": entry.get('url') or entry.get('webpage_url')
+                                    })
+                            
+                            # Get thumbnail from first entry
+                            if not thumbnail:
+                                thumbnail = entry.get('thumbnail') or entry.get('url')
+                                if not thumbnail and entry_formats:
+                                    thumbnail = entry_formats[0].get('url')
                 
                 # Extract username from title if not available
                 if not username and ' by ' in title:
@@ -692,7 +749,20 @@ def get_instagram_info(url: str):
                         })
                 else:
                     # Single image post
-                    img_url = info.get('url') or info.get('thumbnail')
+                    img_url = None
+                    if formats:
+                        # Get best quality image from formats
+                        best_format = None
+                        for f in formats:
+                            if f.get('url'):
+                                if not best_format or (f.get('height', 0) > best_format.get('height', 0)):
+                                    best_format = f
+                        if best_format:
+                            img_url = best_format.get('url')
+                    
+                    if not img_url:
+                        img_url = info.get('url') or info.get('thumbnail')
+                    
                     video_formats = [{
                         "resolution": "Original",
                         "format_id": "best",
