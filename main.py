@@ -585,48 +585,67 @@ def get_instagram_info(url: str):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(clean_url, download=False)
             
+            print(f"Instagram info extracted: title={info.get('title')}, uploader={info.get('uploader')}")
+            
             # Instagram can have multiple formats
             formats = info.get('formats', [])
             video_formats = []
             
             print(f"Found {len(formats)} formats")
             
-            # Get video formats
+            # Check if it's a video or image
+            is_video = False
             for f in formats:
-                if f.get('vcodec') != 'none' and f.get('url'):
-                    res = f.get('height')
-                    if res and res >= 144:
-                        video_formats.append({
-                            "resolution": f"{res}p",
-                            "format_id": f.get('format_id'),
-                            "ext": f.get('ext', 'mp4')
-                        })
+                if f.get('vcodec') and f.get('vcodec') != 'none':
+                    is_video = True
+                    break
             
-            # Remove duplicates and sort
-            seen = set()
-            unique_formats = []
-            for fmt in video_formats:
-                if fmt['resolution'] not in seen:
-                    seen.add(fmt['resolution'])
-                    unique_formats.append(fmt)
-            
-            unique_formats.sort(key=lambda x: int(x['resolution'][:-1]), reverse=True)
-            
-            # If no video formats, might be image post
-            if not unique_formats:
-                # For image posts, add a default format
-                unique_formats.append({
+            if is_video:
+                # Get video formats
+                for f in formats:
+                    if f.get('vcodec') != 'none' and f.get('url'):
+                        res = f.get('height')
+                        if res and res >= 144:
+                            video_formats.append({
+                                "resolution": f"{res}p",
+                                "format_id": f.get('format_id'),
+                                "ext": f.get('ext', 'mp4')
+                            })
+                
+                # Remove duplicates and sort
+                seen = set()
+                unique_formats = []
+                for fmt in video_formats:
+                    if fmt['resolution'] not in seen:
+                        seen.add(fmt['resolution'])
+                        unique_formats.append(fmt)
+                
+                unique_formats.sort(key=lambda x: int(x['resolution'][:-1]), reverse=True)
+                
+                # If no specific formats found, use best
+                if not unique_formats:
+                    unique_formats.append({
+                        "resolution": "Best",
+                        "format_id": "best",
+                        "ext": "mp4"
+                    })
+            else:
+                # For image posts
+                unique_formats = [{
                     "resolution": "Original",
                     "format_id": "best",
                     "ext": "jpg"
-                })
+                }]
             
-            print(f"Returning {len(unique_formats)} unique formats")
+            print(f"Returning {len(unique_formats)} unique formats, is_video: {is_video}")
+            
+            # Get username - try multiple fields
+            username = info.get('uploader') or info.get('uploader_id') or info.get('channel') or 'Unknown'
             
             return {
                 "title": info.get('title', 'Instagram Post'),
                 "thumbnail": info.get('thumbnail'),
-                "channel": info.get('uploader', info.get('uploader_id', 'Unknown')),
+                "channel": f"@{username}" if not username.startswith('@') else username,
                 "duration": info.get('duration', 0),
                 "description": info.get('description', ''),
                 "video_formats": unique_formats,
