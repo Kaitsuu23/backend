@@ -339,211 +339,14 @@ def get_tiktok_info(url: str):
             detail=f"Error mengambil info TikTok: {error_msg}"
         )
 
-# --- Instagram (yt-dlp: video + photo) ---
 
-def _instagram_fetch_image_info(url: str):
-    """Fetch Instagram photo post info via page scraping (fallback when yt-dlp says no video)."""
-    try:
-        print(f"Trying to fetch Instagram photo from: {url}")
-        
-        # Prepare headers and cookies
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Referer": "https://www.instagram.com/",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-        }
-        
-        cookies = {}
-        instagram_cookies = os.environ.get('INSTAGRAM_COOKIES', '')
-        if instagram_cookies:
-            # Parse cookies from Netscape format
-            for line in instagram_cookies.split('\n'):
-                line = line.strip()
-                if line and not line.startswith('#'):
-                    parts = line.split('\t')
-                    if len(parts) >= 7:
-                        cookie_name = parts[5]
-                        cookie_value = parts[6]
-                        cookies[cookie_name] = cookie_value
-            print(f"Using {len(cookies)} cookies for Instagram request")
-        
-        # Method 1: Try page scraping with JSON extraction
-        print("Method 1: Trying page scraping with JSON extraction...")
-        page_response = requests.get(url, headers=headers, cookies=cookies, timeout=15, allow_redirects=True)
-        
-        if page_response.status_code == 200:
-            html = page_response.text
-            
-            # Debug: Check if we got actual HTML or redirect
-            if len(html) < 1000:
-                print(f"Warning: HTML response is very short ({len(html)} chars), might be blocked")
-            
-            import re
-
-            image_urls = []
-            
-            # Try multiple extraction methods
-            
-            # Method 1a: Look for og:image meta tag (usually first image in carousel)
-            og_image_match = re.search(r'<meta property="og:image" content="([^"]+)"', html)
-            if og_image_match:
-                first_image_url = og_image_match.group(1)
-                image_urls.append(first_image_url)
-                print(f"Found image URL via og:image: {first_image_url[:80]}...")
-            else:
-                first_image_url = None
-            
-            # Method 1b: Look for JSON data in script tags (JSON-LD)
-            json_ld_match = re.search(r'<script type="application/ld\+json">(.+?)</script>', html, re.DOTALL)
-            if json_ld_match:
-                try:
-                    json_data = json.loads(json_ld_match.group(1))
-                    if isinstance(json_data, dict):
-                        json_image = json_data.get('image') or json_data.get('contentUrl')
-                        if json_image and json_image not in image_urls:
-                            image_urls.append(json_image)
-                            print(f"Found image URL via JSON-LD: {json_image[:80]}...")
-                except Exception as e:
-                    print(f"Failed to parse JSON-LD: {e}")
-            
-            # Method 1c: Look for window._sharedData (can contain carousel images)
-            print("Trying window._sharedData extraction...")
-            shared_data_match = re.search(r'window\._sharedData = ({.+?});</script>', html, re.DOTALL)
-            if shared_data_match:
-                try:
-                    shared_data = json.loads(shared_data_match.group(1))
-                    entry_data = shared_data.get('entry_data', {})
-                    post_page = entry_data.get('PostPage', [{}])[0]
-                    media = post_page.get('graphql', {}).get('shortcode_media', {})
-                    
-                    # Single media display
-                    main_display = media.get('display_url') or media.get('display_src')
-                    if main_display and main_display not in image_urls:
-                        image_urls.append(main_display)
-                        print(f"Found main image via _sharedData: {main_display[:80]}...")
-                    
-                    # Carousel: edge_sidecar_to_children
-                    sidecar = media.get('edge_sidecar_to_children', {})
-                    edges = sidecar.get('edges', [])
-                    for idx, edge in enumerate(edges):
-                        node = (edge or {}).get('node', {})
-                        child_url = node.get('display_url') or node.get('display_src')
-                        if child_url and child_url not in image_urls:
-                            image_urls.append(child_url)
-                            print(f"Found carousel image {idx + 1} via _sharedData: {child_url[:80]}...")
-                except Exception as e:
-                    print(f"Failed to parse _sharedData: {e}")
-            
-            # If we found one or more image URLs, extract other metadata
-            if image_urls:
-                main_image = image_urls[0]
-                
-                # Try to get title
-                og_title_match = re.search(r'<meta property="og:title" content="([^"]+)"', html)
-                title = og_title_match.group(1) if og_title_match else "Instagram Photo"
-                
-                # Try to get author
-                og_description_match = re.search(r'<meta property="og:description" content="([^"]+)"', html)
-                description = og_description_match.group(1) if og_description_match else ""
-                
-                # Extract username from description or URL
-                username_match = re.search(r'@(\w+)', description)
-                if not username_match:
-                    username_match = re.search(r'instagram\.com/([^/]+)/', url)
-                author = f"@{username_match.group(1)}" if username_match else "Instagram"
-                
-                print(f"Successfully extracted {len(image_urls)} photo(s): {title[:50]}... by {author}")
-
-                video_formats = []
-                for idx, img_url in enumerate(image_urls):
-                    video_formats.append(
-                        {
-                            "resolution": f"Photo {idx + 1}",
-                            "format_id": f"image_{idx}",
-                            "ext": "jpg",
-                            "download_url": img_url,
-                        }
-                    )
-                
-                return {
-                    "title": (title[:200] if title else "Instagram Photo"),
-                    "thumbnail": main_image,
-                    "channel": author,
-                    "duration": None,
-                    "video_formats": video_formats,
-                    "platform": "instagram",
-                    "is_photo": True,
-                }
-            else:
-                print("Could not find image URL in page HTML")
-                # Debug: Print first 500 chars of HTML
-                print(f"HTML preview: {html[:500]}")
-        else:
-            print(f"Page request failed with status: {page_response.status_code}")
-        
-        # Method 2: Try oEmbed API as fallback
-        print("Method 1 failed, trying oEmbed API...")
-        try:
-            r = requests.get(
-                "https://api.instagram.com/oembed",
-                params={"url": url},
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-                timeout=10,
-            )
-            
-            if r.status_code == 200:
-                # Check if response is JSON
-                content_type = r.headers.get('content-type', '')
-                if 'application/json' in content_type:
-                    data = r.json()
-                    image_url = data.get("thumbnail_url") or data.get("url")
-                    
-                    if image_url:
-                        author = data.get("author_name") or "Instagram"
-                        title = data.get("title") or "Instagram Photo"
-                        
-                        print(f"Successfully got photo via oEmbed: {title[:50]}...")
-                        
-                        return {
-                            "title": (title[:200] if title else "Instagram Photo"),
-                            "thumbnail": image_url,
-                            "channel": author,
-                            "duration": None,
-                            "video_formats": [
-                                {
-                                    "resolution": "Photo 1",
-                                    "format_id": "image_0",
-                                    "ext": "jpg",
-                                    "download_url": image_url,
-                                }
-                            ],
-                            "platform": "instagram",
-                            "is_photo": True,
-                        }
-                else:
-                    print(f"oEmbed returned non-JSON response: {content_type}")
-            else:
-                print(f"oEmbed API returned status: {r.status_code}")
-        except Exception as oembed_error:
-            print(f"oEmbed API error: {oembed_error}")
-        
-        print("All methods failed to extract photo info")
-        return None
-        
-    except Exception as e:
-        print(f"Instagram photo fetch error: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return None
-
+# --- Instagram (yt-dlp: video only) ---
+# Photo posts are NOT supported - Instagram heavily protects photo content
+# If you want to enable photo support in the future, implement _instagram_fetch_image_info()
 
 @app.get("/instagram/info")
 def get_instagram_info(url: str):
-    """Get Instagram post/reel (video) or photo info using yt-dlp; photo fallback via oEmbed."""
+    """Get Instagram Reels and video posts info using yt-dlp. Photo posts are not supported."""
     try:
         ydl_opts = {
             'quiet': True,
@@ -617,14 +420,11 @@ def get_instagram_info(url: str):
         msg = str(e)
         # Handle photo-only posts (no video formats)
         if 'There is no video in this post' in msg or 'No video formats found' in msg:
-            # Photo-only post: fallback to oEmbed to get image URL
-            print(f"Instagram post is photo-only, trying oEmbed fallback...")
-            fallback = _instagram_fetch_image_info(url)
-            if fallback:
-                return fallback
+            # Photo posts are not supported - return clear error
+            print(f"Instagram post is photo-only, not supported")
             raise HTTPException(
                 status_code=400,
-                detail="Post ini hanya berisi foto. Download foto Instagram sedang dalam pengembangan.",
+                detail="Instagram photo posts tidak support. Hanya support Reels dan video posts. Untuk download foto, gunakan screenshot atau save dari Instagram app.",
             )
         raise HTTPException(status_code=400, detail=f"Instagram extractor: {msg}")
     except Exception as e:
@@ -634,17 +434,10 @@ def get_instagram_info(url: str):
         
         # Check if it's a photo-only post error
         if 'No video formats found' in error_msg:
-            print(f"Detected photo-only post, trying oEmbed fallback...")
-            try:
-                fallback = _instagram_fetch_image_info(url)
-                if fallback:
-                    return fallback
-            except Exception as fallback_error:
-                print(f"oEmbed fallback also failed: {fallback_error}")
-            
+            print(f"Detected photo-only post - not supported")
             raise HTTPException(
                 status_code=400, 
-                detail="Instagram photo posts tidak fully supported karena proteksi Instagram. Gunakan screenshot atau coba link Reels/video. Untuk TikTok photo/slideshow, pilih platform TikTok (fully supported!)."
+                detail="Instagram photo posts tidak support. Hanya support Reels dan video posts. Untuk download foto, gunakan screenshot."
             )
         
         raise HTTPException(status_code=400, detail=f"Instagram: {error_msg}")
@@ -673,7 +466,7 @@ def proxy_image(url: str):
 
 @app.get("/instagram/download")
 def download_instagram(url: str, background_tasks: BackgroundTasks, format_id: Optional[str] = "best", task_id: Optional[str] = None):
-    """Download Instagram video (yt-dlp) or photo (direct URL from info)."""
+    """Download Instagram Reels and video posts. Photo posts are not supported."""
     if not task_id:
         task_id = str(uuid.uuid4())
     base_name = f"temp_ig_{task_id}"
