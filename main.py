@@ -342,48 +342,18 @@ def get_tiktok_info(url: str):
 # --- Instagram (yt-dlp: video + photo) ---
 
 def _instagram_fetch_image_info(url: str):
-    """Fetch Instagram photo post info via oEmbed (fallback when yt-dlp says no video)."""
+    """Fetch Instagram photo post info via page scraping (fallback when yt-dlp says no video)."""
     try:
-        # Method 1: Try oEmbed API first
-        r = requests.get(
-            "https://api.instagram.com/oembed",
-            params={"url": url},
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-            timeout=15,
-        )
-        if r.status_code == 200:
-            data = r.json()
-            # oEmbed returns thumbnail_url (can be the full-res image for single photo)
-            image_url = data.get("thumbnail_url") or data.get("url")
-            if image_url:
-                author = data.get("author_name") or "Instagram"
-                title = data.get("title") or "Instagram Photo"
-                return {
-                    "title": (title[:200] if title else "Instagram Photo"),
-                    "thumbnail": image_url,
-                    "channel": author,
-                    "duration": None,
-                    "video_formats": [
-                        {
-                            "resolution": "Photo",
-                            "format_id": "image",
-                            "ext": "jpg",
-                            "download_url": image_url,
-                        }
-                    ],
-                    "platform": "instagram",
-                    "is_photo": True,
-                }
+        print(f"Trying to fetch Instagram photo from: {url}")
         
-        # Method 2: If oEmbed fails, try extracting from page metadata
-        print("oEmbed failed, trying page scraping...")
+        # Prepare headers and cookies
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
+            "Referer": "https://www.instagram.com/",
         }
         
-        # Add cookies if available
         cookies = {}
         instagram_cookies = os.environ.get('INSTAGRAM_COOKIES', '')
         if instagram_cookies:
@@ -396,16 +366,22 @@ def _instagram_fetch_image_info(url: str):
                         cookie_name = parts[5]
                         cookie_value = parts[6]
                         cookies[cookie_name] = cookie_value
+            print(f"Using {len(cookies)} cookies for Instagram request")
         
+        # Method 1: Try page scraping first (more reliable)
+        print("Method 1: Trying page scraping...")
         page_response = requests.get(url, headers=headers, cookies=cookies, timeout=15)
+        
         if page_response.status_code == 200:
             html = page_response.text
             
             # Try to find og:image meta tag
             import re
             og_image_match = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+            
             if og_image_match:
                 image_url = og_image_match.group(1)
+                print(f"Found image URL via og:image: {image_url[:50]}...")
                 
                 # Try to get title
                 og_title_match = re.search(r'<meta property="og:title" content="([^"]+)"', html)
@@ -421,6 +397,8 @@ def _instagram_fetch_image_info(url: str):
                     username_match = re.search(r'instagram\.com/([^/]+)/', url)
                 author = f"@{username_match.group(1)}" if username_match else "Instagram"
                 
+                print(f"Successfully extracted photo info: {title[:50]}... by {author}")
+                
                 return {
                     "title": (title[:200] if title else "Instagram Photo"),
                     "thumbnail": image_url,
@@ -438,7 +416,53 @@ def _instagram_fetch_image_info(url: str):
                     "is_photo": True,
                 }
         
+        # Method 2: Try oEmbed API as fallback
+        print("Method 1 failed, trying oEmbed API...")
+        try:
+            r = requests.get(
+                "https://api.instagram.com/oembed",
+                params={"url": url},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                timeout=10,
+            )
+            
+            if r.status_code == 200:
+                # Check if response is JSON
+                content_type = r.headers.get('content-type', '')
+                if 'application/json' in content_type:
+                    data = r.json()
+                    image_url = data.get("thumbnail_url") or data.get("url")
+                    
+                    if image_url:
+                        author = data.get("author_name") or "Instagram"
+                        title = data.get("title") or "Instagram Photo"
+                        
+                        print(f"Successfully got photo via oEmbed: {title[:50]}...")
+                        
+                        return {
+                            "title": (title[:200] if title else "Instagram Photo"),
+                            "thumbnail": image_url,
+                            "channel": author,
+                            "duration": None,
+                            "video_formats": [
+                                {
+                                    "resolution": "Photo",
+                                    "format_id": "image",
+                                    "ext": "jpg",
+                                    "download_url": image_url,
+                                }
+                            ],
+                            "platform": "instagram",
+                            "is_photo": True,
+                        }
+                else:
+                    print(f"oEmbed returned non-JSON response: {content_type}")
+        except Exception as oembed_error:
+            print(f"oEmbed API error: {oembed_error}")
+        
+        print("All methods failed to extract photo info")
         return None
+        
     except Exception as e:
         print(f"Instagram photo fetch error: {e}")
         import traceback
