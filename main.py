@@ -54,7 +54,7 @@ def get_info(url: str):
         all_formats = []
         info = None
         
-        # Strategy 1: Android creator client (usually has most formats)
+        # Strategy 1: Android creator client WITH proxy
         try:
             ydl_opts_android = {
                 'quiet': True,
@@ -72,11 +72,37 @@ def get_info(url: str):
                 info = ydl.extract_info(url, download=False)
                 formats = info.get('formats', [])
                 all_formats.extend(formats)
-                print(f"Android creator client: {len(formats)} formats")
+                print(f"Android creator client (with proxy): {len(formats)} formats")
         except Exception as e:
             print(f"Android creator client failed: {e}")
         
-        # Strategy 2: Try android (not creator) if we got less than 15 formats
+        # Strategy 2: If we got less than 15 formats, try WITHOUT proxy
+        if len(all_formats) < 15:
+            try:
+                print("Trying android_creator WITHOUT proxy...")
+                ydl_opts_no_proxy = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': ['android_creator'],
+                        }
+                    },
+                    'geo_bypass': True,
+                    'geo_bypass_country': 'US',
+                    # NO PROXY
+                }
+                with yt_dlp.YoutubeDL(ydl_opts_no_proxy) as ydl:
+                    info_no_proxy = ydl.extract_info(url, download=False)
+                    formats = info_no_proxy.get('formats', [])
+                    all_formats.extend(formats)
+                    if not info or len(formats) > len(info.get('formats', [])):
+                        info = info_no_proxy
+                    print(f"Android creator client (no proxy): {len(formats)} formats")
+            except Exception as e:
+                print(f"Android creator (no proxy) failed: {e}")
+        
+        # Strategy 3: Try android regular
         if len(all_formats) < 15:
             try:
                 ydl_opts_android_regular = {
@@ -89,7 +115,7 @@ def get_info(url: str):
                     },
                     'geo_bypass': True,
                     'geo_bypass_country': 'US',
-                    **get_ydl_proxy_opts(),
+                    # Try without proxy
                 }
                 with yt_dlp.YoutubeDL(ydl_opts_android_regular) as ydl:
                     info_android = ydl.extract_info(url, download=False)
@@ -101,7 +127,7 @@ def get_info(url: str):
             except Exception as e:
                 print(f"Android regular client failed: {e}")
         
-        # Strategy 3: iOS client
+        # Strategy 4: iOS client
         if len(all_formats) < 15:
             try:
                 ydl_opts_ios = {
@@ -112,7 +138,6 @@ def get_info(url: str):
                             'player_client': ['ios'],
                         }
                     },
-                    **get_ydl_proxy_opts(),
                 }
                 with yt_dlp.YoutubeDL(ydl_opts_ios) as ydl:
                     info_ios = ydl.extract_info(url, download=False)
@@ -123,29 +148,6 @@ def get_info(url: str):
                     print(f"iOS client: {len(formats)} formats")
             except Exception as e:
                 print(f"iOS client failed: {e}")
-        
-        # Strategy 4: Web client as last resort
-        if len(all_formats) < 15:
-            try:
-                ydl_opts_web = {
-                    'quiet': True,
-                    'no_warnings': True,
-                    'extractor_args': {
-                        'youtube': {
-                            'player_client': ['web'],
-                        }
-                    },
-                    **get_ydl_proxy_opts(),
-                }
-                with yt_dlp.YoutubeDL(ydl_opts_web) as ydl:
-                    info_web = ydl.extract_info(url, download=False)
-                    formats = info_web.get('formats', [])
-                    all_formats.extend(formats)
-                    if not info:
-                        info = info_web
-                    print(f"Web client: {len(formats)} formats")
-            except Exception as e:
-                print(f"Web client failed: {e}")
         
         print(f"Total formats from all clients: {len(all_formats)}")
         
