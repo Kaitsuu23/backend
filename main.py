@@ -570,13 +570,14 @@ def get_instagram_info(url: str):
         else:
             clean_url = url
             
+        print(f"[Instagram] Extracting URL: {clean_url}")
         print(f"Fetching Instagram info for: {clean_url}")
         
         ydl_opts = {
             'quiet': False,
             'no_warnings': False,
             'nocheckcertificate': True,
-            'ignoreerrors': True,  # Don't fail on errors, try to extract what we can
+            'extract_flat': False,  # Extract full info for playlist items
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             },
@@ -586,94 +587,141 @@ def get_instagram_info(url: str):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(clean_url, download=False)
             
-            # Handle playlist (carousel posts)
-            if info.get('_type') == 'playlist':
-                print(f"Instagram carousel detected with {len(info.get('entries', []))} items")
-                # For carousel, we'll just take the first item or show as image
-                entries = info.get('entries', [])
-                if entries:
-                    # Use first entry for metadata
-                    first_entry = entries[0]
-                    if first_entry:
-                        info = first_entry
-                
             print(f"Instagram info extracted: title={info.get('title')}, uploader={info.get('uploader')}")
             
-            # Instagram can have multiple formats
-            formats = info.get('formats', [])
-            video_formats = []
-            
-            print(f"Found {len(formats)} formats")
-            
-            # Check if it's a video or image
-            is_video = False
-            for f in formats:
-                if f.get('vcodec') and f.get('vcodec') != 'none':
-                    is_video = True
-                    break
-            
-            if is_video:
-                # Get video formats
-                for f in formats:
-                    if f.get('vcodec') != 'none' and f.get('url'):
-                        res = f.get('height')
-                        if res and res >= 144:
-                            video_formats.append({
-                                "resolution": f"{res}p",
-                                "format_id": f.get('format_id'),
-                                "ext": f.get('ext', 'mp4')
-                            })
-                
-                # Remove duplicates and sort
-                seen = set()
-                unique_formats = []
-                for fmt in video_formats:
-                    if fmt['resolution'] not in seen:
-                        seen.add(fmt['resolution'])
-                        unique_formats.append(fmt)
-                
-                unique_formats.sort(key=lambda x: int(x['resolution'][:-1]), reverse=True)
-                
-                # If no specific formats found, use best
-                if not unique_formats:
-                    unique_formats.append({
-                        "resolution": "Best",
-                        "format_id": "best",
-                        "ext": "mp4"
-                    })
-            else:
-                # For image posts (including carousel)
-                unique_formats = [{
-                    "resolution": "Original",
-                    "format_id": "best",
-                    "ext": "jpg"
-                }]
-            
-            print(f"Returning {len(unique_formats)} unique formats, is_video: {is_video}")
-            
-            # Get username - try multiple fields or extract from title
+            # Variables for metadata
+            title = info.get('title', 'Instagram Post')
+            thumbnail = info.get('thumbnail')
             username = info.get('uploader') or info.get('uploader_id') or info.get('channel')
+            duration = info.get('duration', 0)
+            description = info.get('description', '')
             
-            # If still no username, try to extract from title "Post by username" or "Video by username"
-            if not username:
-                title = info.get('title', '')
-                if ' by ' in title:
+            # Handle playlist (carousel posts with multiple images/videos)
+            is_carousel = info.get('_type') == 'playlist'
+            video_formats = []
+            is_video = False
+            
+            if is_carousel:
+                print(f"Instagram carousel detected with {len(info.get('entries', []))} items")
+                entries = info.get('entries', [])
+                
+                # For carousel, create format for each item (image or video)
+                for idx, entry in enumerate(entries):
+                    if entry:
+                        # Check if entry is a video or image
+                        entry_formats = entry.get('formats', [])
+                        entry_is_video = any(f.get('vcodec') and f.get('vcodec') != 'none' for f in entry_formats)
+                        
+                        if entry_is_video:
+                            is_video = True
+                            # Get best video format URL
+                            best_format = None
+                            for f in entry_formats:
+                                if f.get('vcodec') != 'none' and f.get('url'):
+                                    if not best_format or (f.get('height', 0) > best_format.get('height', 0)):
+                                        best_format = f
+                            
+                            if best_format:
+                                video_formats.append({
+                                    "resolution": f"Video {idx + 1}",
+                                    "format_id": f"video_{idx}",
+                                    "ext": "mp4",
+                                    "download_url": best_format.get('url'),
+                                    "entry_url": entry.get('url') or entry.get('webpage_url')
+                                })
+                        else:
+                            # Image
+                            img_url = entry.get('url') or entry.get('thumbnail')
+                            if img_url:
+                                video_formats.append({
+                                    "resolution": f"Image {idx + 1}",
+                                    "format_id": f"img_{idx}",
+                                    "ext": "jpg",
+                                    "download_url": img_url,
+                                    "entry_url": entry.get('url') or entry.get('webpage_url')
+                                })
+                        
+                        # Get thumbnail from first entry
+                        if not thumbnail:
+                            thumbnail = entry.get('thumbnail') or entry.get('url')
+                
+                # Extract username from title if not available
+                if not username and ' by ' in title:
                     username = title.split(' by ')[-1].strip()
+                
+            else:
+                # Single post (video or image)
+                formats = info.get('formats', [])
+                print(f"Found {len(formats)} formats")
+                
+                # Check if it's a video or image
+                for f in formats:
+                    if f.get('vcodec') and f.get('vcodec') != 'none':
+                        is_video = True
+                        break
+                
+                if is_video:
+                    # Get video formats
+                    for f in formats:
+                        if f.get('vcodec') != 'none' and f.get('url'):
+                            res = f.get('height')
+                            if res and res >= 144:
+                                video_formats.append({
+                                    "resolution": f"{res}p",
+                                    "format_id": f.get('format_id'),
+                                    "ext": f.get('ext', 'mp4')
+                                })
+                    
+                    # Remove duplicates and sort
+                    seen = set()
+                    unique_formats = []
+                    for fmt in video_formats:
+                        if fmt['resolution'] not in seen:
+                            seen.add(fmt['resolution'])
+                            unique_formats.append(fmt)
+                    
+                    unique_formats.sort(key=lambda x: int(x['resolution'][:-1]), reverse=True)
+                    video_formats = unique_formats
+                    
+                    # If no specific formats found, use best
+                    if not video_formats:
+                        video_formats.append({
+                            "resolution": "Best",
+                            "format_id": "best",
+                            "ext": "mp4"
+                        })
                 else:
-                    username = 'Unknown'
+                    # Single image post
+                    img_url = info.get('url') or info.get('thumbnail')
+                    video_formats = [{
+                        "resolution": "Original",
+                        "format_id": "best",
+                        "ext": "jpg",
+                        "download_url": img_url
+                    }]
+                
+                # Extract username from title if not available
+                if not username and ' by ' in title:
+                    username = title.split(' by ')[-1].strip()
+            
+            print(f"Returning {len(video_formats)} unique formats, is_video: {is_video}")
             
             # Format username
+            if not username:
+                username = 'Unknown'
             if username and username != 'Unknown':
                 username = f"@{username}" if not username.startswith('@') else username
             
             return {
-                "title": info.get('title', 'Instagram Post'),
-                "thumbnail": info.get('thumbnail'),
+                "title": title,
+                "thumbnail": thumbnail,
                 "channel": username,
-                "duration": info.get('duration', 0),
-                "description": info.get('description', ''),
-                "video_formats": unique_formats,
-                "platform": "instagram"
+                "duration": duration,
+                "description": description,
+                "video_formats": video_formats,
+                "platform": "instagram",
+                "is_carousel": is_carousel,
+                "is_video": is_video
             }
             
     except Exception as e:
@@ -696,52 +744,112 @@ def download_instagram(url: str, background_tasks: BackgroundTasks, format_id: O
     base_name = f"temp_{task_id}"
 
     download_progress[task_id] = {"status": "starting", "progress": 0.0}
-
-    def my_hook(d):
-        if d['status'] == 'downloading':
-            total = d.get('total_bytes') or d.get('total_bytes_estimate', 1)
-            downloaded = d.get('downloaded_bytes', 0)
-            if total > 0:
-                download_progress[task_id] = {"status": "downloading", "progress": downloaded / total}
-        elif d['status'] == 'finished':
-            download_progress[task_id] = {"status": "processing", "progress": 1.0}
-    
-    # Clean the URL
-    if '?' in url:
-        clean_url = url.split('?')[0]
-    else:
-        clean_url = url
-    
-    ydl_opts = {
-        'format': format_id if format_id != "best" else 'best',
-        'outtmpl': f"{base_name}.%(ext)s",
-        'quiet': False,
-        'progress_hooks': [my_hook],
-        'nocheckcertificate': True,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        },
-        **get_ydl_proxy_opts(),
-    }
     
     try:
-        print(f"Downloading Instagram: {clean_url}")
+        # Clean the URL
+        if '?' in url:
+            clean_url = url.split('?')[0]
+        else:
+            clean_url = url
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(clean_url, download=True)
+        print(f"Downloading Instagram: {clean_url}, format_id: {format_id}")
+        
+        # First, get info to check if we have direct download URL (for carousel items)
+        info_response = get_instagram_info(clean_url)
+        
+        # Check if the selected format has a direct download_url
+        download_url = None
+        file_ext = "mp4"
+        
+        for fmt in info_response.get('video_formats', []):
+            if fmt['format_id'] == format_id:
+                download_url = fmt.get('download_url')
+                file_ext = fmt.get('ext', 'mp4')
+                break
+        
+        if download_url:
+            # Direct download for carousel items
+            print(f"Using direct download URL for carousel item")
             
-        files = glob.glob(f"{base_name}*")
-        if not files:
-            raise Exception("File tidak ditemukan setelah download")
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://www.instagram.com/',
+            }
+            
+            download_progress[task_id] = {"status": "downloading", "progress": 0.1}
+            
+            response = requests.get(download_url, headers=headers, stream=True, timeout=30)
+            
+            if response.status_code != 200:
+                raise Exception(f"Gagal download: status code {response.status_code}")
+            
+            # Save file
+            file_path = f"{base_name}.{file_ext}"
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            
+            print(f"Downloading file, size: {total_size} bytes")
+            
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            progress = downloaded / total_size
+                            download_progress[task_id] = {"status": "downloading", "progress": progress}
+            
+            download_progress[task_id] = {"status": "completed", "progress": 1.0}
+            print(f"Download completed: {downloaded} bytes")
+            
+        else:
+            # Use yt-dlp for regular posts
+            def my_hook(d):
+                if d['status'] == 'downloading':
+                    total = d.get('total_bytes') or d.get('total_bytes_estimate', 1)
+                    downloaded = d.get('downloaded_bytes', 0)
+                    if total > 0:
+                        download_progress[task_id] = {"status": "downloading", "progress": downloaded / total}
+                elif d['status'] == 'finished':
+                    download_progress[task_id] = {"status": "processing", "progress": 1.0}
+            
+            ydl_opts = {
+                'format': format_id if format_id != "best" else 'best',
+                'outtmpl': f"{base_name}.%(ext)s",
+                'quiet': False,
+                'progress_hooks': [my_hook],
+                'nocheckcertificate': True,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                },
+                **get_ydl_proxy_opts(),
+            }
+            
+            print(f"Using yt-dlp for download")
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(clean_url, download=True)
+            
+            files = glob.glob(f"{base_name}*")
+            if not files:
+                raise Exception("File tidak ditemukan setelah download")
+            
+            file_path = files[0]
+            file_ext = file_path.split('.')[-1]
         
-        # Generate simple filename: instagram_{timestamp}.ext
+        # Generate simple filename: instagram_{timestamp}_img1.ext or instagram_{timestamp}.ext
         import time
         timestamp = str(int(time.time()))
         
-        file_path = files[0]
-        file_ext = file_path.split('.')[-1]
-        
-        safe_title = f"instagram_{timestamp}"
+        # Check if it's a carousel image
+        if format_id.startswith('img_'):
+            img_num = format_id.replace('img_', '')
+            safe_title = f"instagram_{timestamp}_img{int(img_num) + 1}"
+        elif format_id.startswith('video_'):
+            vid_num = format_id.replace('video_', '')
+            safe_title = f"instagram_{timestamp}_video{int(vid_num) + 1}"
+        else:
+            safe_title = f"instagram_{timestamp}"
 
         def cleanup_all():
             cleanup_files(base_name)
