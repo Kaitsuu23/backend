@@ -352,6 +352,9 @@ def _instagram_fetch_image_info(url: str):
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
             "Referer": "https://www.instagram.com/",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
         }
         
         cookies = {}
@@ -368,20 +371,64 @@ def _instagram_fetch_image_info(url: str):
                         cookies[cookie_name] = cookie_value
             print(f"Using {len(cookies)} cookies for Instagram request")
         
-        # Method 1: Try page scraping first (more reliable)
-        print("Method 1: Trying page scraping...")
-        page_response = requests.get(url, headers=headers, cookies=cookies, timeout=15)
+        # Method 1: Try page scraping with JSON extraction
+        print("Method 1: Trying page scraping with JSON extraction...")
+        page_response = requests.get(url, headers=headers, cookies=cookies, timeout=15, allow_redirects=True)
         
         if page_response.status_code == 200:
             html = page_response.text
             
-            # Try to find og:image meta tag
-            import re
-            og_image_match = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+            # Debug: Check if we got actual HTML or redirect
+            if len(html) < 1000:
+                print(f"Warning: HTML response is very short ({len(html)} chars), might be blocked")
             
+            import re
+            
+            # Try multiple extraction methods
+            
+            # Method 1a: Look for og:image meta tag
+            og_image_match = re.search(r'<meta property="og:image" content="([^"]+)"', html)
             if og_image_match:
                 image_url = og_image_match.group(1)
-                print(f"Found image URL via og:image: {image_url[:50]}...")
+                print(f"Found image URL via og:image: {image_url[:80]}...")
+            else:
+                # Method 1b: Look for JSON data in script tags
+                print("og:image not found, trying to extract from embedded JSON...")
+                
+                # Instagram embeds data in <script type="application/ld+json">
+                json_ld_match = re.search(r'<script type="application/ld\+json">(.+?)</script>', html, re.DOTALL)
+                if json_ld_match:
+                    try:
+                        json_data = json.loads(json_ld_match.group(1))
+                        # Try to get image from JSON-LD
+                        if isinstance(json_data, dict):
+                            image_url = json_data.get('image') or json_data.get('contentUrl')
+                            if image_url:
+                                print(f"Found image URL via JSON-LD: {image_url[:80]}...")
+                    except:
+                        pass
+                
+                # Method 1c: Look for window._sharedData
+                if not og_image_match and not json_ld_match:
+                    print("Trying window._sharedData extraction...")
+                    shared_data_match = re.search(r'window\._sharedData = ({.+?});</script>', html, re.DOTALL)
+                    if shared_data_match:
+                        try:
+                            shared_data = json.loads(shared_data_match.group(1))
+                            # Navigate through the nested structure
+                            entry_data = shared_data.get('entry_data', {})
+                            post_page = entry_data.get('PostPage', [{}])[0]
+                            media = post_page.get('graphql', {}).get('shortcode_media', {})
+                            image_url = media.get('display_url') or media.get('display_src')
+                            if image_url:
+                                print(f"Found image URL via _sharedData: {image_url[:80]}...")
+                        except Exception as e:
+                            print(f"Failed to parse _sharedData: {e}")
+            
+            # If we found an image URL, extract other metadata
+            if og_image_match or 'image_url' in locals():
+                if not 'image_url' in locals():
+                    image_url = og_image_match.group(1)
                 
                 # Try to get title
                 og_title_match = re.search(r'<meta property="og:title" content="([^"]+)"', html)
@@ -415,6 +462,12 @@ def _instagram_fetch_image_info(url: str):
                     "platform": "instagram",
                     "is_photo": True,
                 }
+            else:
+                print("Could not find image URL in page HTML")
+                # Debug: Print first 500 chars of HTML
+                print(f"HTML preview: {html[:500]}")
+        else:
+            print(f"Page request failed with status: {page_response.status_code}")
         
         # Method 2: Try oEmbed API as fallback
         print("Method 1 failed, trying oEmbed API...")
@@ -457,6 +510,8 @@ def _instagram_fetch_image_info(url: str):
                         }
                 else:
                     print(f"oEmbed returned non-JSON response: {content_type}")
+            else:
+                print(f"oEmbed API returned status: {r.status_code}")
         except Exception as oembed_error:
             print(f"oEmbed API error: {oembed_error}")
         
@@ -573,7 +628,7 @@ def get_instagram_info(url: str):
             
             raise HTTPException(
                 status_code=400, 
-                detail="Post ini hanya berisi foto. Saat ini hanya support video/Reels. Coba link Reels atau video post."
+                detail="Instagram photo posts tidak fully supported karena proteksi Instagram. Gunakan screenshot atau coba link Reels/video. Untuk TikTok photo/slideshow, pilih platform TikTok (fully supported!)."
             )
         
         raise HTTPException(status_code=400, detail=f"Instagram: {error_msg}")
