@@ -340,124 +340,94 @@ def get_tiktok_info(url: str):
         )
 
 
-# --- Instagram (yt-dlp: video only) ---
-# Photo posts use instaloader library for better reliability
-
+# --- Instagram Photo Fallback ---
 def _instagram_fetch_image_info(url: str):
-    """Fetch Instagram photo post info using instaloader."""
+    """Fetch Instagram photo using oEmbed API (simple, no rate limit) or instaloader (fallback)."""
     try:
-        import instaloader
+        print(f"Trying to fetch Instagram photo: {url}")
         
-        print(f"Trying to fetch Instagram photo using instaloader: {url}")
-        
-        # Extract shortcode from URL
-        # URL format: https://www.instagram.com/p/SHORTCODE/ or https://www.instagram.com/reel/SHORTCODE/
-        import re
-        shortcode_match = re.search(r'instagram\.com/(?:p|reel)/([^/]+)', url)
-        if not shortcode_match:
-            print("Could not extract shortcode from URL")
-            return None
-        
-        shortcode = shortcode_match.group(1)
-        print(f"Extracted shortcode: {shortcode}")
-        
-        # Create instaloader instance
-        L = instaloader.Instaloader(
-            download_videos=False,
-            download_video_thumbnails=False,
-            download_geotags=False,
-            download_comments=False,
-            save_metadata=False,
-            compress_json=False,
-            quiet=True,
-        )
-        
-        # Try to login with cookies if available
-        instagram_cookies = os.environ.get('INSTAGRAM_COOKIES', '')
-        if instagram_cookies:
-            try:
-                # Parse sessionid from cookies
-                sessionid = None
-                for line in instagram_cookies.split('\n'):
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        parts = line.split('\t')
-                        if len(parts) >= 7 and parts[5] == 'sessionid':
-                            sessionid = parts[6]
-                            break
+        # Method 1: oEmbed API (simpler, usually works)
+        try:
+            print("Trying oEmbed API...")
+            r = requests.get(
+                "https://api.instagram.com/oembed/",
+                params={"url": url},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=10
+            )
+            
+            if r.status_code == 200:
+                data = r.json()
+                image_url = data.get("thumbnail_url")
                 
-                if sessionid:
-                    # Load session from sessionid
-                    # Note: instaloader needs username too, but we can try without login
-                    print(f"Found sessionid in cookies")
-            except Exception as e:
-                print(f"Could not parse cookies for instaloader: {e}")
+                if image_url:
+                    return {
+                        "title": (data.get("title", "Instagram Photo"))[:200],
+                        "thumbnail": image_url,
+                        "channel": data.get("author_name", "Instagram"),
+                        "duration": None,
+                        "video_formats": [{
+                            "resolution": "Photo",
+                            "format_id": "image",
+                            "ext": "jpg",
+                            "download_url": image_url,
+                        }],
+                        "platform": "instagram",
+                        "is_photo": True,
+                    }
+        except:
+            pass
         
-        # Get post by shortcode
-        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        # Method 2: instaloader (may be rate limited)
+        print("oEmbed failed, trying instaloader...")
+        import instaloader
+        import re
         
-        # Check if it's a video (should have been handled by yt-dlp)
-        if post.is_video:
-            print("Post is a video, should be handled by yt-dlp")
+        match = re.search(r'instagram\.com/(?:p|reel)/([^/?]+)', url)
+        if not match:
             return None
         
-        # Get image URL
-        image_url = post.url
+        L = instaloader.Instaloader(download_videos=False, quiet=True, max_connection_attempts=1)
+        post = instaloader.Post.from_shortcode(L.context, match.group(1))
         
-        # Get metadata
-        title = post.caption if post.caption else "Instagram Photo"
-        # Limit title length
-        if len(title) > 200:
-            title = title[:200] + "..."
+        if post.is_video:
+            return None
         
-        author = f"@{post.owner_username}" if post.owner_username else "Instagram"
-        thumbnail = image_url
-        
-        print(f"Successfully fetched photo via instaloader: {title[:50]}... by {author}")
-        
-        # For carousel (multiple images), get first image
-        # post.get_sidecar_nodes() returns iterator of sidecar nodes
-        video_formats = []
-        
+        formats = []
         if post.typename == 'GraphSidecar':
-            # Carousel post - multiple images/videos
-            print("Post is a carousel, getting all images...")
             for idx, node in enumerate(post.get_sidecar_nodes()):
                 if not node.is_video:
-                    video_formats.append({
+                    formats.append({
                         "resolution": f"Image {idx + 1}",
                         "format_id": f"image_{idx}",
                         "ext": "jpg",
                         "download_url": node.display_url,
                     })
         else:
-            # Single image post
-            video_formats.append({
+            formats.append({
                 "resolution": "Photo",
                 "format_id": "image",
                 "ext": "jpg",
-                "download_url": image_url,
+                "download_url": post.url,
             })
         
-        if not video_formats:
-            print("No images found in post")
-            return None
+        if formats:
+            return {
+                "title": (post.caption or "Instagram Photo")[:200],
+                "thumbnail": post.url,
+                "channel": f"@{post.owner_username}" if post.owner_username else "Instagram",
+                "duration": None,
+                "video_formats": formats,
+                "platform": "instagram",
+                "is_photo": True,
+            }
         
-        return {
-            "title": title,
-            "thumbnail": thumbnail,
-            "channel": author,
-            "duration": None,
-            "video_formats": video_formats,
-            "platform": "instagram",
-            "is_photo": True,
-        }
-        
-    except Exception as e:
-        print(f"Instaloader error: {e}")
-        import traceback
-        print(traceback.format_exc())
         return None
+    except Exception as e:
+        if "401" not in str(e) and "403" not in str(e):
+            print(f"Photo fetch error: {e}")
+        return None
+
 
 @app.get("/instagram/info")
 def get_instagram_info(url: str):
