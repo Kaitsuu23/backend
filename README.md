@@ -16,8 +16,8 @@ FastAPI backend untuk download video/audio dari YouTube, TikTok, dan Instagram.
 - Menggunakan TikWM API (no cookies needed)
 
 ✅ **Instagram Downloader**
-- Reels & Post video - via yt-dlp
-- Photo posts & Carousel - via instaloader
+- Reels & Post video
+- Photo download
 - Memerlukan cookies untuk authentication
 
 ## Environment Variables
@@ -96,7 +96,6 @@ INSTAGRAM_COOKIES_FROM_BROWSER=chrome
 fastapi
 uvicorn
 yt-dlp
-instaloader
 requests
 python-multipart
 ```
