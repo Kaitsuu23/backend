@@ -341,12 +341,127 @@ def get_tiktok_info(url: str):
 
 
 # --- Instagram (yt-dlp: video only) ---
-# Photo posts are NOT supported - Instagram heavily protects photo content
-# If you want to enable photo support in the future, implement _instagram_fetch_image_info()
+# Photo posts use instaloader library for better reliability
+
+def _instagram_fetch_image_info(url: str):
+    """Fetch Instagram photo post info using instaloader."""
+    try:
+        import instaloader
+        
+        print(f"Trying to fetch Instagram photo using instaloader: {url}")
+        
+        # Extract shortcode from URL
+        # URL format: https://www.instagram.com/p/SHORTCODE/ or https://www.instagram.com/reel/SHORTCODE/
+        import re
+        shortcode_match = re.search(r'instagram\.com/(?:p|reel)/([^/]+)', url)
+        if not shortcode_match:
+            print("Could not extract shortcode from URL")
+            return None
+        
+        shortcode = shortcode_match.group(1)
+        print(f"Extracted shortcode: {shortcode}")
+        
+        # Create instaloader instance
+        L = instaloader.Instaloader(
+            download_videos=False,
+            download_video_thumbnails=False,
+            download_geotags=False,
+            download_comments=False,
+            save_metadata=False,
+            compress_json=False,
+            quiet=True,
+        )
+        
+        # Try to login with cookies if available
+        instagram_cookies = os.environ.get('INSTAGRAM_COOKIES', '')
+        if instagram_cookies:
+            try:
+                # Parse sessionid from cookies
+                sessionid = None
+                for line in instagram_cookies.split('\n'):
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        parts = line.split('\t')
+                        if len(parts) >= 7 and parts[5] == 'sessionid':
+                            sessionid = parts[6]
+                            break
+                
+                if sessionid:
+                    # Load session from sessionid
+                    # Note: instaloader needs username too, but we can try without login
+                    print(f"Found sessionid in cookies")
+            except Exception as e:
+                print(f"Could not parse cookies for instaloader: {e}")
+        
+        # Get post by shortcode
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        
+        # Check if it's a video (should have been handled by yt-dlp)
+        if post.is_video:
+            print("Post is a video, should be handled by yt-dlp")
+            return None
+        
+        # Get image URL
+        image_url = post.url
+        
+        # Get metadata
+        title = post.caption if post.caption else "Instagram Photo"
+        # Limit title length
+        if len(title) > 200:
+            title = title[:200] + "..."
+        
+        author = f"@{post.owner_username}" if post.owner_username else "Instagram"
+        thumbnail = image_url
+        
+        print(f"Successfully fetched photo via instaloader: {title[:50]}... by {author}")
+        
+        # For carousel (multiple images), get first image
+        # post.get_sidecar_nodes() returns iterator of sidecar nodes
+        video_formats = []
+        
+        if post.typename == 'GraphSidecar':
+            # Carousel post - multiple images/videos
+            print("Post is a carousel, getting all images...")
+            for idx, node in enumerate(post.get_sidecar_nodes()):
+                if not node.is_video:
+                    video_formats.append({
+                        "resolution": f"Image {idx + 1}",
+                        "format_id": f"image_{idx}",
+                        "ext": "jpg",
+                        "download_url": node.display_url,
+                    })
+        else:
+            # Single image post
+            video_formats.append({
+                "resolution": "Photo",
+                "format_id": "image",
+                "ext": "jpg",
+                "download_url": image_url,
+            })
+        
+        if not video_formats:
+            print("No images found in post")
+            return None
+        
+        return {
+            "title": title,
+            "thumbnail": thumbnail,
+            "channel": author,
+            "duration": None,
+            "video_formats": video_formats,
+            "platform": "instagram",
+            "is_photo": True,
+        }
+        
+    except Exception as e:
+        print(f"Instaloader error: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return None
 
 @app.get("/instagram/info")
 def get_instagram_info(url: str):
-    """Get Instagram Reels and video posts info using yt-dlp. Photo posts are not supported."""
+    """Get Instagram Reels, video posts, and photo posts info. Uses yt-dlp for video, instaloader for photos."""
     try:
         ydl_opts = {
             'quiet': True,
@@ -420,11 +535,14 @@ def get_instagram_info(url: str):
         msg = str(e)
         # Handle photo-only posts (no video formats)
         if 'There is no video in this post' in msg or 'No video formats found' in msg:
-            # Photo posts are not supported - return clear error
-            print(f"Instagram post is photo-only, not supported")
+            # Photo-only post: try instaloader
+            print(f"Instagram post is photo-only, trying instaloader...")
+            fallback = _instagram_fetch_image_info(url)
+            if fallback:
+                return fallback
             raise HTTPException(
                 status_code=400,
-                detail="Instagram photo posts tidak support. Hanya support Reels dan video posts. Untuk download foto, gunakan screenshot atau save dari Instagram app.",
+                detail="Tidak bisa mengambil foto Instagram. Pastikan link valid dan public.",
             )
         raise HTTPException(status_code=400, detail=f"Instagram extractor: {msg}")
     except Exception as e:
@@ -434,10 +552,14 @@ def get_instagram_info(url: str):
         
         # Check if it's a photo-only post error
         if 'No video formats found' in error_msg:
-            print(f"Detected photo-only post - not supported")
+            print(f"Detected photo-only post, trying instaloader...")
+            fallback = _instagram_fetch_image_info(url)
+            if fallback:
+                return fallback
+            
             raise HTTPException(
                 status_code=400, 
-                detail="Instagram photo posts tidak support. Hanya support Reels dan video posts. Untuk download foto, gunakan screenshot."
+                detail="Tidak bisa mengambil foto Instagram. Pastikan link valid dan public."
             )
         
         raise HTTPException(status_code=400, detail=f"Instagram: {error_msg}")
@@ -466,7 +588,7 @@ def proxy_image(url: str):
 
 @app.get("/instagram/download")
 def download_instagram(url: str, background_tasks: BackgroundTasks, format_id: Optional[str] = "best", task_id: Optional[str] = None):
-    """Download Instagram Reels and video posts. Photo posts are not supported."""
+    """Download Instagram Reels, video posts, and photo posts. Uses yt-dlp for video, direct download for photos."""
     if not task_id:
         task_id = str(uuid.uuid4())
     base_name = f"temp_ig_{task_id}"
