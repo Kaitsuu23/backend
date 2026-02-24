@@ -522,14 +522,17 @@ def get_instagram_info(url: str):
         
         # Check if it's a photo-only post error
         if 'No video formats found' in error_msg:
-            print(f"Detected photo-only post, trying instaloader...")
+            print(f"Detected photo-only post")
+            
+            # Try photo fallback
             fallback = _instagram_fetch_image_info(url)
             if fallback:
                 return fallback
             
+            # If fallback also failed, give clear instructions
             raise HTTPException(
                 status_code=400, 
-                detail="Tidak bisa mengambil foto Instagram. Pastikan link valid dan public."
+                detail="Instagram photo posts sulit di-download karena proteksi Instagram. Solusi: 1) Screenshot (Win+Shift+S / Cmd+Shift+4), 2) Instagram app → Save → Export, 3) Gunakan TikTok downloader jika content ada di TikTok (fully supported)."
             )
         
         raise HTTPException(status_code=400, detail=f"Instagram: {error_msg}")
